@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Pattern Frontmatter",
+  "description": "Schema for Production AI Patterns frontmatter validation",
+  "type": "object",
+  "required": ["title", "pillar", "status", "tags"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 100,
+      "description": "Pattern name in title case"
+    },
+    "pillar": {
+      "type": "string",
+      "enum": [
+        "inference-and-serving",
+        "data-patterns",
+        "reliability",
+        "retrieval-and-memory",
+        "observability",
+        "security-and-trust",
+        "cost-and-efficiency",
+        "governance"
+      ],
+      "description": "The pillar this pattern belongs to"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["proposed", "emerging", "validated-in-production"],
+      "description": "Maturity status of the pattern"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9-]+$"
+      },
+      "minItems": 1,
+      "maxItems": 10,
+      "description": "Lowercase hyphenated tags for categorization"
+    },
+    "related": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Names of related patterns"
+    },
+    "contributors": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^@"
+      },
+      "description": "GitHub usernames of contributors"
+    },
+    "last_updated": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+      "description": "Last updated date in YYYY-MM format"
+    },
+    "sidebar": {
+      "type": "object",
+      "description": "Starlight sidebar configuration"
+    },
+    "description": {
+      "type": "string",
+      "description": "Short description for SEO and pattern cards"
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,86 @@
+---
+title: Production AI Patterns
+description: A structured pattern library for engineers building AI systems in production.
+template: splash
+hero:
+  tagline: Named patterns with trade-offs, implementation guides, and code examples for every layer of a production AI system.
+  actions:
+    - text: Browse Patterns
+      link: /guides/getting-started/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/PrajwalAmte/Production-AI-Patterns
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+## The 8 Pillars
+
+<CardGrid>
+  <Card title="Inference & Serving" icon="rocket">
+    Gateway routing, semantic caching, model routers, fallback chains, and batch
+    inference patterns for cost and latency control.
+  </Card>
+
+  <Card title="Data Patterns for AI" icon="document">
+    Data contracts, feature stores, training pipelines, eval dataset management,
+    and streaming data for real-time AI systems.
+  </Card>
+
+  <Card title="Reliability & Resilience" icon="approve-check-circle">
+    Circuit breakers, graceful degradation, canary deployments, shadow testing,
+    and model rollback for AI-specific failure modes.
+  </Card>
+
+  <Card title="Retrieval & Memory" icon="magnifier">
+    Classic RAG, GraphRAG, hybrid search, reranking, contextual memory, and
+    chunking strategies for knowledge-grounded systems.
+  </Card>
+
+  <Card title="Observability & Monitoring" icon="seti:todo">
+    Span-level tracing, cost attribution, quality drift detection, prompt
+    logging, and SLOs designed for AI workloads.
+  </Card>
+
+  <Card title="Security & Trust" icon="warning">
+    Input sanitization, output validation, structured enforcement, audit trails,
+    least-privilege tool access, and PII scrubbing.
+  </Card>
+
+  <Card title="Cost & Efficiency" icon="setting">
+    Token budgets, tiered model strategies, prompt compression, inference-time
+    compute scaling, and cost circuit breakers.
+  </Card>
+
+  <Card title="Governance & Compliance" icon="list-format">
+    Model cards, data lineage, policy-as-code, responsible AI checklists,
+    human-in-the-loop gates, and model versioning.
+  </Card>
+</CardGrid>
+
+## Why This Exists
+
+<CardGrid>
+  <LinkCard
+    title="Not an awesome list"
+    description="Structured, opinionated patterns with named trade-offs and explicit anti-use-cases."
+    href="/guides/getting-started/"
+  />
+  <LinkCard
+    title="Not vendor docs"
+    description="Framework-agnostic, model-agnostic, vendor-neutral. The patterns, not the products."
+    href="/guides/getting-started/"
+  />
+  <LinkCard
+    title="Decision guide"
+    description="Answer a few questions about your system to get recommended patterns."
+    href="/guides/decision-guide/"
+  />
+  <LinkCard
+    title="Contribute a pattern"
+    description="Open-source and community-maintained. Every pattern goes through structured review."
+    href="https://github.com/PrajwalAmte/Production-AI-Patterns/blob/main/CONTRIBUTING.md"
+  />
+</CardGrid>

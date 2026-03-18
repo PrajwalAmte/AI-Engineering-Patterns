@@ -1,0 +1,11 @@
+{
+  "name": "production-ai-patterns-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "gray-matter": "^4.0.3",
+    "glob": "^11.0.0"
+  }
+}

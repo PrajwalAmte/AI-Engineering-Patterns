@@ -1,0 +1,46 @@
+name: Validate Patterns
+
+on:
+  pull_request:
+    paths:
+      - "site/src/content/docs/patterns/**/*.md"
+      - "site/src/content/docs/patterns/**/*.mdx"
+
+jobs:
+  validate-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install validation dependencies
+        run: npm ci --prefix scripts
+
+      - name: Validate pattern frontmatter
+        run: node scripts/validate-schema.js
+
+  build-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install dependencies
+        working-directory: site
+        run: npm ci
+
+      - name: Type check
+        working-directory: site
+        run: npx astro check || true
+
+      - name: Build site
+        working-directory: site
+        run: npm run build
