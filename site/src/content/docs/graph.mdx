@@ -1,0 +1,17 @@
+---
+title: Pattern Graph
+description: Interactive visualization showing how production AI patterns relate to each other.
+---
+
+import PatternGraph from '../../components/PatternGraph.astro';
+
+See how patterns cluster, overlap, and connect across pillars. Hover a node to highlight its connections. Click to open the pattern. Drag nodes to rearrange.
+
+<PatternGraph />
+
+**How to read the graph:**
+
+- Each **node** is a pattern, colored by its pillar.
+- Each **edge** connects patterns that are explicitly related (referenced in each other's Related Patterns section).
+- **Clusters** reveal which patterns tend to be adopted together.
+- Patterns with many connections are **integration points** — they touch multiple parts of the system.

@@ -21,6 +21,9 @@ export default defineConfig({
         baseUrl:
           "https://github.com/PrajwalAmte/Production-AI-Patterns/edit/main/site/",
       },
+      components: {
+        Sidebar: "./src/components/EmptySidebar.astro",
+      },
       customCss: ["./src/styles/custom.css"],
       head: [
         {
@@ -33,7 +36,7 @@ export default defineConfig({
       ],
       sidebar: [
         {
-          label: "Getting Started",
+          label: "Guides",
           items: [
             { label: "Introduction", slug: "guides/getting-started" },
             { label: "Decision Guide", slug: "guides/decision-guide" },
@@ -41,36 +44,26 @@ export default defineConfig({
           ],
         },
         {
-          label: "Inference & Serving",
-          autogenerate: { directory: "patterns/inference-and-serving" },
+          label: "Library",
+          items: [
+            { label: "Browse All Patterns", slug: "patterns" },
+            { label: "Pattern Graph", slug: "graph" },
+          ],
         },
         {
-          label: "Data Patterns for AI",
-          autogenerate: { directory: "patterns/data-patterns" },
-        },
-        {
-          label: "Reliability & Resilience",
-          autogenerate: { directory: "patterns/reliability" },
-        },
-        {
-          label: "Retrieval & Memory",
-          autogenerate: { directory: "patterns/retrieval-and-memory" },
-        },
-        {
-          label: "Observability & Monitoring",
-          autogenerate: { directory: "patterns/observability" },
-        },
-        {
-          label: "Security & Trust",
-          autogenerate: { directory: "patterns/security-and-trust" },
-        },
-        {
-          label: "Cost & Efficiency",
-          autogenerate: { directory: "patterns/cost-and-efficiency" },
-        },
-        {
-          label: "Governance & Compliance",
-          autogenerate: { directory: "patterns/governance" },
+          label: "Pillars",
+          items: [
+            { label: "Inference & Serving", slug: "patterns/inference-and-serving" },
+            { label: "Data Patterns", slug: "patterns/data-patterns" },
+            { label: "Reliability & Resilience", slug: "patterns/reliability" },
+            { label: "Retrieval & Memory", slug: "patterns/retrieval-and-memory" },
+            { label: "Observability", slug: "patterns/observability" },
+            { label: "Security & Trust", slug: "patterns/security-and-trust" },
+            { label: "Cost & Efficiency", slug: "patterns/cost-and-efficiency" },
+            { label: "Governance", slug: "patterns/governance" },
+            { label: "Graph Patterns", slug: "patterns/graph-patterns" },
+            { label: "Evaluation & Testing", slug: "patterns/evaluation-and-testing" },
+          ],
         },
       ],
     }),

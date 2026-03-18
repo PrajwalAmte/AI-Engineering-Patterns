@@ -21,7 +21,9 @@
         "observability",
         "security-and-trust",
         "cost-and-efficiency",
-        "governance"
+        "governance",
+        "graph-patterns",
+        "evaluation-and-testing"
       ],
       "description": "The pillar this pattern belongs to"
     },

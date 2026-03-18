@@ -1,0 +1,61 @@
+---
+title: Browse All Patterns
+description: A complete catalog of production AI patterns organized by pillar.
+---
+
+import { LinkCard, CardGrid } from "@astrojs/starlight/components";
+
+14 patterns across 10 pillars. Each pillar covers a distinct layer of a production AI system. Click a pillar to see all its patterns, or [explore the pattern graph](/Production-AI-Patterns/graph/) to see how they connect.
+
+<CardGrid>
+  <LinkCard
+    title="Inference & Serving"
+    description="3 patterns — Gateway routing, semantic caching, and model routers."
+    href="/Production-AI-Patterns/patterns/inference-and-serving/"
+  />
+  <LinkCard
+    title="Data Patterns"
+    description="1 pattern — Data contracts, feature stores, and training pipelines."
+    href="/Production-AI-Patterns/patterns/data-patterns/"
+  />
+  <LinkCard
+    title="Reliability & Resilience"
+    description="1 pattern — Circuit breakers, graceful degradation, and canary deployments."
+    href="/Production-AI-Patterns/patterns/reliability/"
+  />
+  <LinkCard
+    title="Retrieval & Memory"
+    description="1 pattern — Hybrid search, RAG, reranking, and contextual memory."
+    href="/Production-AI-Patterns/patterns/retrieval-and-memory/"
+  />
+  <LinkCard
+    title="Observability"
+    description="1 pattern — Span-level tracing, cost attribution, and quality drift detection."
+    href="/Production-AI-Patterns/patterns/observability/"
+  />
+  <LinkCard
+    title="Security & Trust"
+    description="1 pattern — Input sanitization, output validation, and PII scrubbing."
+    href="/Production-AI-Patterns/patterns/security-and-trust/"
+  />
+  <LinkCard
+    title="Cost & Efficiency"
+    description="1 pattern — Token budgets, prompt compression, and cost circuit breakers."
+    href="/Production-AI-Patterns/patterns/cost-and-efficiency/"
+  />
+  <LinkCard
+    title="Governance"
+    description="1 pattern — Model cards, data lineage, and policy-as-code."
+    href="/Production-AI-Patterns/patterns/governance/"
+  />
+  <LinkCard
+    title="Graph Patterns"
+    description="3 patterns — GraphRAG, graph reasoning, and entity resolution."
+    href="/Production-AI-Patterns/patterns/graph-patterns/"
+  />
+  <LinkCard
+    title="Evaluation & Testing"
+    description="1 pattern — LLM-as-Judge, eval pipelines, and regression testing."
+    href="/Production-AI-Patterns/patterns/evaluation-and-testing/"
+  />
+</CardGrid>

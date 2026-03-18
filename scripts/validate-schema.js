@@ -12,7 +12,8 @@ const schema = JSON.parse(readFileSync(SCHEMA_PATH, "utf-8"));
 const ajv = new Ajv({ allErrors: true });
 const validate = ajv.compile(schema);
 
-const files = await glob(PATTERNS_GLOB, { cwd: ROOT, absolute: true });
+const allFiles = await glob(PATTERNS_GLOB, { cwd: ROOT, absolute: true });
+const files = allFiles.filter((f) => !f.endsWith("/index.md") && !f.endsWith("/index.mdx"));
 
 if (files.length === 0) {
   console.log("No pattern files found to validate.");

@@ -1,0 +1,21 @@
+---
+title: Reliability & Resilience
+description: Circuit breakers, graceful degradation, canary deployments, shadow testing, and model rollback for AI-specific failure modes.
+sidebar:
+  order: 0
+  label: Overview
+---
+
+import { LinkCard, CardGrid } from "@astrojs/starlight/components";
+
+Patterns for keeping AI systems working when things go wrong. This pillar covers failure detection, graceful degradation, safe rollout strategies, and recovery mechanisms specific to AI workloads.
+
+## Patterns
+
+<CardGrid>
+  <LinkCard
+    title="Circuit Breaker for LLMs"
+    description="Detect LLM provider degradation early and trip to fallback before user impact accumulates."
+    href="/Production-AI-Patterns/patterns/reliability/circuit-breaker/"
+  />
+</CardGrid>

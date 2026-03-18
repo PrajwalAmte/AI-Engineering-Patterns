@@ -63,3 +63,20 @@ Agents combine multiple patterns. A typical production agent stack includes:
 4. [Human-in-the-Loop Gate](/Production-AI-Patterns/patterns/governance/human-in-the-loop/) for high-risk actions
 5. [Cost Circuit Breaker](/Production-AI-Patterns/patterns/cost-and-efficiency/cost-circuit-breaker/) for runaway prevention
 6. [Contextual Memory Pattern](/Production-AI-Patterns/patterns/retrieval-and-memory/contextual-memory/) for session persistence
+
+## I need graph-based intelligence
+
+**What are you trying to achieve with graphs?**
+
+- Multi-hop questions that connect information across documents → Start with [GraphRAG](/Production-AI-Patterns/patterns/graph-patterns/graph-rag/)
+- Non-linear reasoning with branching and merging approaches → Start with [Graph of Thoughts](/Production-AI-Patterns/patterns/graph-patterns/graph-of-thoughts/)
+- Deduplicating entities across multiple data sources → Start with [Entity Resolution Graph](/Production-AI-Patterns/patterns/graph-patterns/entity-resolution-graph/)
+- Building a knowledge graph for your domain → Start with [GraphRAG](/Production-AI-Patterns/patterns/graph-patterns/graph-rag/) for the retrieval layer and [Entity Resolution Graph](/Production-AI-Patterns/patterns/graph-patterns/entity-resolution-graph/) for clean entity data
+
+## I need to evaluate and test AI quality
+
+**What is your primary evaluation challenge?**
+
+- Need automated quality scoring at scale → Start with [LLM-as-Judge](/Production-AI-Patterns/patterns/evaluation-and-testing/llm-as-judge/)
+- Quality is degrading after prompt or model changes → Combine [LLM-as-Judge](/Production-AI-Patterns/patterns/evaluation-and-testing/llm-as-judge/) with [Span-Level Tracing](/Production-AI-Patterns/patterns/observability/span-level-tracing/)
+- Need a quality gate before deploying changes → Build an eval pipeline with [LLM-as-Judge](/Production-AI-Patterns/patterns/evaluation-and-testing/llm-as-judge/) scoring

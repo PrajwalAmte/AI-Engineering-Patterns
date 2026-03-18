@@ -3,64 +3,99 @@ title: Production AI Patterns
 description: A structured pattern library for engineers building AI systems in production.
 template: splash
 hero:
-  tagline: Named patterns with trade-offs, implementation guides, and code examples for every layer of a production AI system.
+  tagline: "14 named patterns across 10 pillars. Trade-offs, implementation guides, and code examples for every layer of a production AI system."
   actions:
-    - text: Browse Patterns
-      link: /Production-AI-Patterns/guides/getting-started/
+    - text: Browse All Patterns
+      link: /Production-AI-Patterns/patterns/
       icon: right-arrow
+    - text: Pattern Graph
+      link: /Production-AI-Patterns/graph/
+      icon: star
+      variant: minimal
     - text: View on GitHub
       link: https://github.com/PrajwalAmte/Production-AI-Patterns
       icon: external
       variant: minimal
 ---
 
-import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
 
-## The 8 Pillars
+## Three ways into the library
 
 <CardGrid>
-  <Card title="Inference & Serving" icon="rocket">
-    Gateway routing, semantic caching, model routers, fallback chains, and batch
-    inference patterns for cost and latency control.
-  </Card>
-
-  <Card title="Data Patterns for AI" icon="document">
-    Data contracts, feature stores, training pipelines, eval dataset management,
-    and streaming data for real-time AI systems.
-  </Card>
-
-  <Card title="Reliability & Resilience" icon="approve-check-circle">
-    Circuit breakers, graceful degradation, canary deployments, shadow testing,
-    and model rollback for AI-specific failure modes.
-  </Card>
-
-  <Card title="Retrieval & Memory" icon="magnifier">
-    Classic RAG, GraphRAG, hybrid search, reranking, contextual memory, and
-    chunking strategies for knowledge-grounded systems.
-  </Card>
-
-  <Card title="Observability & Monitoring" icon="seti:todo">
-    Span-level tracing, cost attribution, quality drift detection, prompt
-    logging, and SLOs designed for AI workloads.
-  </Card>
-
-  <Card title="Security & Trust" icon="warning">
-    Input sanitization, output validation, structured enforcement, audit trails,
-    least-privilege tool access, and PII scrubbing.
-  </Card>
-
-  <Card title="Cost & Efficiency" icon="setting">
-    Token budgets, tiered model strategies, prompt compression, inference-time
-    compute scaling, and cost circuit breakers.
-  </Card>
-
-  <Card title="Governance & Compliance" icon="list-format">
-    Model cards, data lineage, policy-as-code, responsible AI checklists,
-    human-in-the-loop gates, and model versioning.
-  </Card>
+  <LinkCard
+    title="Browse the catalog"
+    description="Scan the full library when you already know the shape of the system you need."
+    href="/Production-AI-Patterns/patterns/"
+  />
+  <LinkCard
+    title="Use the decision guide"
+    description="Answer a few questions and narrow the pattern set before you build."
+    href="/Production-AI-Patterns/guides/decision-guide/"
+  />
+  <LinkCard
+    title="See the pattern graph"
+    description="Explore adjacent ideas and dependencies across pillars."
+    href="/Production-AI-Patterns/graph/"
+  />
 </CardGrid>
 
-## Why This Exists
+## Pick a pillar
+
+<CardGrid>
+  <LinkCard
+    title="Inference & Serving"
+    description="Gateway routing, semantic caching, model routers, and fallback chains."
+    href="/Production-AI-Patterns/patterns/inference-and-serving/"
+  />
+  <LinkCard
+    title="Data Patterns"
+    description="Data contracts, feature stores, training pipelines, and eval datasets."
+    href="/Production-AI-Patterns/patterns/data-patterns/"
+  />
+  <LinkCard
+    title="Reliability & Resilience"
+    description="Circuit breakers, graceful degradation, canary deployments, and model rollback."
+    href="/Production-AI-Patterns/patterns/reliability/"
+  />
+  <LinkCard
+    title="Retrieval & Memory"
+    description="Hybrid search, RAG, reranking, and contextual memory."
+    href="/Production-AI-Patterns/patterns/retrieval-and-memory/"
+  />
+  <LinkCard
+    title="Observability"
+    description="Span-level tracing, cost attribution, and quality drift detection."
+    href="/Production-AI-Patterns/patterns/observability/"
+  />
+  <LinkCard
+    title="Security & Trust"
+    description="Input sanitization, output validation, audit trails, and PII scrubbing."
+    href="/Production-AI-Patterns/patterns/security-and-trust/"
+  />
+  <LinkCard
+    title="Cost & Efficiency"
+    description="Token budgets, tiered models, prompt compression, and cost circuit breakers."
+    href="/Production-AI-Patterns/patterns/cost-and-efficiency/"
+  />
+  <LinkCard
+    title="Governance & Compliance"
+    description="Model cards, data lineage, policy-as-code, and model versioning."
+    href="/Production-AI-Patterns/patterns/governance/"
+  />
+  <LinkCard
+    title="Graph Patterns"
+    description="GraphRAG, graph-based reasoning, and entity resolution."
+    href="/Production-AI-Patterns/patterns/graph-patterns/"
+  />
+  <LinkCard
+    title="Evaluation & Testing"
+    description="LLM-as-Judge, eval pipelines, regression testing, and benchmarking."
+    href="/Production-AI-Patterns/patterns/evaluation-and-testing/"
+  />
+</CardGrid>
+
+## Why this exists
 
 <CardGrid>
   <LinkCard
@@ -72,11 +107,6 @@ import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
     title="Not vendor docs"
     description="Framework-agnostic, model-agnostic, vendor-neutral. The patterns, not the products."
     href="/Production-AI-Patterns/guides/getting-started/"
-  />
-  <LinkCard
-    title="Decision guide"
-    description="Answer a few questions about your system to get recommended patterns."
-    href="/Production-AI-Patterns/guides/decision-guide/"
   />
   <LinkCard
     title="Contribute a pattern"

@@ -1,0 +1,21 @@
+---
+title: Cost & Efficiency
+description: Token budgets, tiered model strategies, prompt compression, inference-time compute scaling, and cost circuit breakers.
+sidebar:
+  order: 0
+  label: Overview
+---
+
+import { LinkCard, CardGrid } from "@astrojs/starlight/components";
+
+Patterns for running AI systems without unbounded spend. This pillar covers token budgets, model tiering, prompt compression, and cost control mechanisms at every layer.
+
+## Patterns
+
+<CardGrid>
+  <LinkCard
+    title="Token Budget Pattern"
+    description="Hard limits on input/output tokens per request with trimming or summarization when limits are hit."
+    href="/Production-AI-Patterns/patterns/cost-and-efficiency/token-budget/"
+  />
+</CardGrid>

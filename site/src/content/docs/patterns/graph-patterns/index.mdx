@@ -1,0 +1,31 @@
+---
+title: Graph Patterns
+description: GraphRAG, knowledge graphs, graph-based reasoning, and entity resolution for AI systems that need structured relationships.
+sidebar:
+  order: 0
+  label: Overview
+---
+
+import { LinkCard, CardGrid } from "@astrojs/starlight/components";
+
+Patterns for leveraging graph structures in AI systems. This pillar covers knowledge graph construction, graph-enhanced retrieval, graph-structured reasoning, and entity resolution — the techniques that unlock multi-hop reasoning and relationship-aware AI.
+
+## Patterns
+
+<CardGrid>
+  <LinkCard
+    title="GraphRAG"
+    description="Augment RAG with knowledge graphs for multi-hop reasoning, entity relationships, and structured context that vector search alone cannot provide."
+    href="/Production-AI-Patterns/patterns/graph-patterns/graph-rag/"
+  />
+  <LinkCard
+    title="Graph of Thoughts"
+    description="Structure LLM reasoning as a directed graph where thoughts branch, merge, and loop to solve complex problems that linear chains cannot."
+    href="/Production-AI-Patterns/patterns/graph-patterns/graph-of-thoughts/"
+  />
+  <LinkCard
+    title="Entity Resolution Graph"
+    description="Use graph-based approaches to deduplicate, link, and merge entity mentions across heterogeneous data sources into a unified knowledge graph."
+    href="/Production-AI-Patterns/patterns/graph-patterns/entity-resolution-graph/"
+  />
+</CardGrid>

@@ -27,6 +27,8 @@ Read through the pillars in order. They roughly follow the lifecycle of a reques
 6. **Security & Trust** — Guardrails, PII handling, and prompt injection defenses.
 7. **Cost & Efficiency** — Running AI systems without unbounded spend.
 8. **Governance & Compliance** — Lineage, model cards, and compliance operations.
+9. **Graph Patterns** — Knowledge graphs, graph-based reasoning, and entity resolution.
+10. **Evaluation & Testing** — LLM-as-Judge, eval pipelines, and regression testing.
 
 ## Reading a Pattern
 
