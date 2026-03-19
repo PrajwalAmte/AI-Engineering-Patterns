@@ -236,9 +236,9 @@ def run_eval_suite(
 
 ## Related Patterns
 
-- **[Span-Level Tracing](/Production-AI-Patterns/patterns/observability/span-level-tracing/)** — Provides the raw data (inputs, outputs, latencies) that the judge evaluates.
-- **[Circuit Breaker for LLMs](/Production-AI-Patterns/patterns/reliability/circuit-breaker/)** — Quality scores from LLM-as-Judge can feed into circuit breaker trip conditions.
-- **[Model Card Pattern](/Production-AI-Patterns/patterns/governance/model-card/)** — Eval results should be documented in the model card.
+- **[Span-Level Tracing](/AI-Engineering-Patterns/patterns/observability/span-level-tracing/)** — Provides the raw data (inputs, outputs, latencies) that the judge evaluates.
+- **[Circuit Breaker for LLMs](/AI-Engineering-Patterns/patterns/reliability/circuit-breaker/)** — Quality scores from LLM-as-Judge can feed into circuit breaker trip conditions.
+- **[Model Card Pattern](/AI-Engineering-Patterns/patterns/governance/model-card/)** — Eval results should be documented in the model card.
 
 ## Further Reading
 

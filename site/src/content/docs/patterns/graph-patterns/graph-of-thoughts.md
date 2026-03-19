@@ -185,8 +185,8 @@ def evaluate_branch(content: str) -> float:
 
 ## Related Patterns
 
-- **[GraphRAG](/Production-AI-Patterns/patterns/graph-patterns/graph-rag/)** — Graph structure for retrieval context. GoT is graph structure for reasoning.
-- **[Entity Resolution Graph](/Production-AI-Patterns/patterns/graph-patterns/entity-resolution-graph/)** — Complementary graph pattern focused on data quality rather than reasoning.
+- **[GraphRAG](/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/)** — Graph structure for retrieval context. GoT is graph structure for reasoning.
+- **[Entity Resolution Graph](/AI-Engineering-Patterns/patterns/graph-patterns/entity-resolution-graph/)** — Complementary graph pattern focused on data quality rather than reasoning.
 
 ## Further Reading
 

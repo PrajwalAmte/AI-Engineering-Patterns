@@ -197,11 +197,11 @@ async def resilient_completion(
 
 ## Related Patterns
 
-- **[Fallback Chain](/Production-AI-Patterns/patterns/inference-and-serving/fallback-chain/)** — The circuit breaker decides when to activate the fallback chain.
-- **[Graceful Degradation Pattern](/Production-AI-Patterns/patterns/reliability/graceful-degradation/)** — Fallback behavior when the circuit is open.
-- **[Health Check Pattern](/Production-AI-Patterns/patterns/reliability/health-check/)** — Health checks complement circuit breakers with proactive detection.
-- **[LLM Gateway Pattern](/Production-AI-Patterns/patterns/inference-and-serving/llm-gateway/)** — The gateway is the natural place to implement circuit breaker logic.
-- **[SLO Pattern for AI](/Production-AI-Patterns/patterns/observability/slo-for-ai/)** — SLOs define the thresholds that trigger circuit breaker trips.
+- **[Fallback Chain](/AI-Engineering-Patterns/patterns/inference-and-serving/fallback-chain/)** — The circuit breaker decides when to activate the fallback chain.
+- **[Graceful Degradation Pattern](/AI-Engineering-Patterns/patterns/reliability/graceful-degradation/)** — Fallback behavior when the circuit is open.
+- **[Health Check Pattern](/AI-Engineering-Patterns/patterns/reliability/health-check/)** — Health checks complement circuit breakers with proactive detection.
+- **[LLM Gateway Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/llm-gateway/)** — The gateway is the natural place to implement circuit breaker logic.
+- **[SLO Pattern for AI](/AI-Engineering-Patterns/patterns/observability/slo-for-ai/)** — SLOs define the thresholds that trigger circuit breaker trips.
 
 ## Further Reading
 

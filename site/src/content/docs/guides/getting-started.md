@@ -13,7 +13,7 @@ Browse the sidebar. Patterns are organized into 8 pillars. Each pillar covers a 
 
 ### If you are not sure where to start
 
-Use the [Decision Guide](/Production-AI-Patterns/guides/decision-guide/) to answer a few questions about your system and get recommended patterns.
+Use the [Decision Guide](/AI-Engineering-Patterns/guides/decision-guide/) to answer a few questions about your system and get recommended patterns.
 
 ### If you want to understand the landscape
 
@@ -59,4 +59,4 @@ Each pattern has a status indicating its maturity level:
 
 ## Contributing
 
-This is an open-source project. If you have used a pattern in production and want to share it, or if you see something that needs correction, see the [Contributing Guide](https://github.com/PrajwalAmte/Production-AI-Patterns/blob/main/CONTRIBUTING.md).
+This is an open-source project. If you have used a pattern in production and want to share it, or if you see something that needs correction, see the [Contributing Guide](https://github.com/PrajwalAmte/AI-Engineering-Patterns/blob/main/CONTRIBUTING.md).

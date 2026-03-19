@@ -197,9 +197,9 @@ def graph_rag_query(
 
 ## Related Patterns
 
-- **[Hybrid Search](/Production-AI-Patterns/patterns/retrieval-and-memory/hybrid-search/)** — Combine with GraphRAG for both semantic and structural retrieval.
-- **[Entity Resolution Graph](/Production-AI-Patterns/patterns/graph-patterns/entity-resolution-graph/)** — Clean entity data is a prerequisite for a useful knowledge graph.
-- **[Graph of Thoughts](/Production-AI-Patterns/patterns/graph-patterns/graph-of-thoughts/)** — Graph reasoning at inference time complements graph-structured retrieval.
+- **[Hybrid Search](/AI-Engineering-Patterns/patterns/retrieval-and-memory/hybrid-search/)** — Combine with GraphRAG for both semantic and structural retrieval.
+- **[Entity Resolution Graph](/AI-Engineering-Patterns/patterns/graph-patterns/entity-resolution-graph/)** — Clean entity data is a prerequisite for a useful knowledge graph.
+- **[Graph of Thoughts](/AI-Engineering-Patterns/patterns/graph-patterns/graph-of-thoughts/)** — Graph reasoning at inference time complements graph-structured retrieval.
 
 ## Further Reading
 

@@ -212,10 +212,10 @@ def validate_model_card(card_path: str) -> list[str]:
 
 ## Related Patterns
 
-- **[Data Lineage for AI](/Production-AI-Patterns/patterns/governance/data-lineage/)** — Model cards reference training data; lineage provides the full provenance chain.
-- **[Responsible AI Checklist Pattern](/Production-AI-Patterns/patterns/governance/responsible-ai-checklist/)** — The pre-deployment review that verifies model card completeness and accuracy.
-- **[Model Versioning & Deprecation](/Production-AI-Patterns/patterns/governance/model-versioning/)** — Model cards are versioned alongside model artifacts.
-- **[Policy-as-Code Pattern](/Production-AI-Patterns/patterns/governance/policy-as-code/)** — Automated checks can enforce model card completeness as a deployment gate.
+- **[Data Lineage for AI](/AI-Engineering-Patterns/patterns/governance/data-lineage/)** — Model cards reference training data; lineage provides the full provenance chain.
+- **[Responsible AI Checklist Pattern](/AI-Engineering-Patterns/patterns/governance/responsible-ai-checklist/)** — The pre-deployment review that verifies model card completeness and accuracy.
+- **[Model Versioning & Deprecation](/AI-Engineering-Patterns/patterns/governance/model-versioning/)** — Model cards are versioned alongside model artifacts.
+- **[Policy-as-Code Pattern](/AI-Engineering-Patterns/patterns/governance/policy-as-code/)** — Automated checks can enforce model card completeness as a deployment gate.
 
 ## Further Reading
 

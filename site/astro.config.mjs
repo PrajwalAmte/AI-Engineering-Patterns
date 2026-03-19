@@ -4,7 +4,7 @@ import starlight from "@astrojs/starlight";
 
 export default defineConfig({
   site: "https://prajwalamte.github.io",
-  base: "/Production-AI-Patterns",
+  base: "/AI-Engineering-Patterns",
   integrations: [
     starlight({
       title: "AI Engineering Patterns",
@@ -14,12 +14,12 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/PrajwalAmte/Production-AI-Patterns",
+          href: "https://github.com/PrajwalAmte/AI-Engineering-Patterns",
         },
       ],
       editLink: {
         baseUrl:
-          "https://github.com/PrajwalAmte/Production-AI-Patterns/edit/main/site/",
+          "https://github.com/PrajwalAmte/AI-Engineering-Patterns/edit/main/site/",
       },
       customCss: ["./src/styles/custom.css"],
       head: [

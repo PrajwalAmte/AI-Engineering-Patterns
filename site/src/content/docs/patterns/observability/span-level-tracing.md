@@ -220,10 +220,10 @@ For production use, integrate with OpenTelemetry SDKs instead of a custom implem
 
 ## Related Patterns
 
-- **[Cost Attribution Pattern](/Production-AI-Patterns/patterns/observability/cost-attribution/)** — Uses span-level token and cost data to attribute spend per feature and user.
-- **[Quality Drift Detection](/Production-AI-Patterns/patterns/observability/quality-drift-detection/)** — Aggregates quality signals from traced outputs over time.
-- **[Prompt Logging Pattern](/Production-AI-Patterns/patterns/observability/prompt-logging/)** — Span attributes can include prompt content for debugging. Balance with privacy.
-- **[LLM Gateway Pattern](/Production-AI-Patterns/patterns/inference-and-serving/llm-gateway/)** — The gateway produces the inference span. Pipeline tracing wraps around it.
+- **[Cost Attribution Pattern](/AI-Engineering-Patterns/patterns/observability/cost-attribution/)** — Uses span-level token and cost data to attribute spend per feature and user.
+- **[Quality Drift Detection](/AI-Engineering-Patterns/patterns/observability/quality-drift-detection/)** — Aggregates quality signals from traced outputs over time.
+- **[Prompt Logging Pattern](/AI-Engineering-Patterns/patterns/observability/prompt-logging/)** — Span attributes can include prompt content for debugging. Balance with privacy.
+- **[LLM Gateway Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/llm-gateway/)** — The gateway produces the inference span. Pipeline tracing wraps around it.
 
 ## Further Reading
 

@@ -232,11 +232,11 @@ For production systems, replace the approximation in `count_tokens` with the mod
 
 ## Related Patterns
 
-- **[Prompt Compression Pattern](/Production-AI-Patterns/patterns/cost-and-efficiency/prompt-compression/)** — Reduce token count of context before it enters the budget. Compression happens before; budgeting enforces the limit.
-- **[Cost Circuit Breaker](/Production-AI-Patterns/patterns/cost-and-efficiency/cost-circuit-breaker/)** — Aggregate budget enforcement at the system level, not per-request.
-- **[Tiered Model Strategy](/Production-AI-Patterns/patterns/cost-and-efficiency/tiered-model-strategy/)** — Route to cheaper models to stretch the per-request cost budget.
-- **[Cost Attribution Pattern](/Production-AI-Patterns/patterns/observability/cost-attribution/)** — Track actual token usage against budgets to identify over/under-allocation.
-- **[Chunking Strategy Pattern](/Production-AI-Patterns/patterns/retrieval-and-memory/chunking-strategy/)** — Chunk size directly affects how many chunks fit in the context budget.
+- **[Prompt Compression Pattern](/AI-Engineering-Patterns/patterns/cost-and-efficiency/prompt-compression/)** — Reduce token count of context before it enters the budget. Compression happens before; budgeting enforces the limit.
+- **[Cost Circuit Breaker](/AI-Engineering-Patterns/patterns/cost-and-efficiency/cost-circuit-breaker/)** — Aggregate budget enforcement at the system level, not per-request.
+- **[Tiered Model Strategy](/AI-Engineering-Patterns/patterns/cost-and-efficiency/tiered-model-strategy/)** — Route to cheaper models to stretch the per-request cost budget.
+- **[Cost Attribution Pattern](/AI-Engineering-Patterns/patterns/observability/cost-attribution/)** — Track actual token usage against budgets to identify over/under-allocation.
+- **[Chunking Strategy Pattern](/AI-Engineering-Patterns/patterns/retrieval-and-memory/chunking-strategy/)** — Chunk size directly affects how many chunks fit in the context budget.
 
 ## Further Reading
 

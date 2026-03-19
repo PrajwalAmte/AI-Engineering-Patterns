@@ -208,10 +208,10 @@ For production systems, use a database that natively supports hybrid search (Wea
 
 ## Related Patterns
 
-- **[Classic RAG Pattern](/Production-AI-Patterns/patterns/retrieval-and-memory/classic-rag/)** — Hybrid search is an upgrade to the retrieval component in classic RAG.
-- **[Reranking Pattern](/Production-AI-Patterns/patterns/retrieval-and-memory/reranking/)** — Typically applied after hybrid search for further precision improvement.
-- **[Chunking Strategy Pattern](/Production-AI-Patterns/patterns/retrieval-and-memory/chunking-strategy/)** — Chunk size affects both dense and sparse retrieval quality.
-- **[GraphRAG Pattern](/Production-AI-Patterns/patterns/graph-patterns/graph-rag/)** — For relational queries where neither hybrid nor dense search is sufficient.
+- **[Classic RAG Pattern](/AI-Engineering-Patterns/patterns/retrieval-and-memory/classic-rag/)** — Hybrid search is an upgrade to the retrieval component in classic RAG.
+- **[Reranking Pattern](/AI-Engineering-Patterns/patterns/retrieval-and-memory/reranking/)** — Typically applied after hybrid search for further precision improvement.
+- **[Chunking Strategy Pattern](/AI-Engineering-Patterns/patterns/retrieval-and-memory/chunking-strategy/)** — Chunk size affects both dense and sparse retrieval quality.
+- **[GraphRAG Pattern](/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/)** — For relational queries where neither hybrid nor dense search is sufficient.
 
 ## Further Reading
 

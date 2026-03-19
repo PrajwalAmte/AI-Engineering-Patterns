@@ -202,11 +202,11 @@ For production systems, complement pattern-based detection with a trained classi
 
 ## Related Patterns
 
-- **[Output Validation Pattern](/Production-AI-Patterns/patterns/security-and-trust/output-validation/)** — Sanitize inputs before the model; validate outputs after. Both layers are needed.
-- **[Schema-Enforced Input Pattern](/Production-AI-Patterns/patterns/security-and-trust/schema-enforced-input/)** — Replace free text with structured input to eliminate injection surface entirely.
-- **[Structured Output Enforcement](/Production-AI-Patterns/patterns/security-and-trust/structured-output-enforcement/)** — Constrain outputs to match a schema. Complements input sanitization.
-- **[PII Scrubbing Pipeline](/Production-AI-Patterns/patterns/security-and-trust/pii-scrubbing/)** — Dedicated PII handling for data that flows into training and logging pipelines.
-- **[Audit Trail Pattern](/Production-AI-Patterns/patterns/security-and-trust/audit-trail/)** — Log sanitization decisions for incident investigation and compliance.
+- **[Output Validation Pattern](/AI-Engineering-Patterns/patterns/security-and-trust/output-validation/)** — Sanitize inputs before the model; validate outputs after. Both layers are needed.
+- **[Schema-Enforced Input Pattern](/AI-Engineering-Patterns/patterns/security-and-trust/schema-enforced-input/)** — Replace free text with structured input to eliminate injection surface entirely.
+- **[Structured Output Enforcement](/AI-Engineering-Patterns/patterns/security-and-trust/structured-output-enforcement/)** — Constrain outputs to match a schema. Complements input sanitization.
+- **[PII Scrubbing Pipeline](/AI-Engineering-Patterns/patterns/security-and-trust/pii-scrubbing/)** — Dedicated PII handling for data that flows into training and logging pipelines.
+- **[Audit Trail Pattern](/AI-Engineering-Patterns/patterns/security-and-trust/audit-trail/)** — Log sanitization decisions for incident investigation and compliance.
 
 ## Further Reading
 

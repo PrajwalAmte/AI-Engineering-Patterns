@@ -176,11 +176,11 @@ class LLMGateway:
 
 ## Related Patterns
 
-- **[Model Router Pattern](/Production-AI-Patterns/patterns/inference-and-serving/model-router/)** — Routes to different models by complexity. Often implemented inside the gateway.
-- **[Fallback Chain](/Production-AI-Patterns/patterns/inference-and-serving/fallback-chain/)** — Provider failover logic. The gateway is the natural place to implement it.
-- **[Semantic Caching](/Production-AI-Patterns/patterns/inference-and-serving/semantic-caching/)** — Cache layer that integrates at the gateway level.
-- **[Cost Attribution Pattern](/Production-AI-Patterns/patterns/observability/cost-attribution/)** — The gateway is the source of truth for cost data.
-- **[Span-Level Tracing Pattern](/Production-AI-Patterns/patterns/observability/span-level-tracing/)** — The gateway generates the root span for model interactions.
+- **[Model Router Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/model-router/)** — Routes to different models by complexity. Often implemented inside the gateway.
+- **[Fallback Chain](/AI-Engineering-Patterns/patterns/inference-and-serving/fallback-chain/)** — Provider failover logic. The gateway is the natural place to implement it.
+- **[Semantic Caching](/AI-Engineering-Patterns/patterns/inference-and-serving/semantic-caching/)** — Cache layer that integrates at the gateway level.
+- **[Cost Attribution Pattern](/AI-Engineering-Patterns/patterns/observability/cost-attribution/)** — The gateway is the source of truth for cost data.
+- **[Span-Level Tracing Pattern](/AI-Engineering-Patterns/patterns/observability/span-level-tracing/)** — The gateway generates the root span for model interactions.
 
 ## Further Reading
 

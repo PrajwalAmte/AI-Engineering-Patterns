@@ -4,7 +4,7 @@ A structured pattern library for engineers building AI systems in production. Na
 
 **The same way the Gang of Four gave software engineers a shared vocabulary for code design, AI Engineering Patterns gives AI engineers a shared vocabulary for shipping reliable, cost-effective, and trustworthy AI systems.**
 
-[Browse the patterns &rarr;](https://prajwalamte.github.io/Production-AI-Patterns)
+[Browse the patterns &rarr;](https://prajwalamte.github.io/AI-Engineering-Patterns)
 
 ## What This Is
 
@@ -54,7 +54,7 @@ Every pattern follows the same structure:
 
 ### Browse the site
 
-Visit [prajwalamte.github.io/Production-AI-Patterns](https://prajwalamte.github.io/Production-AI-Patterns) to read patterns with full-text search, navigation, dark mode, and an interactive [pattern graph](https://prajwalamte.github.io/Production-AI-Patterns/graph/) showing how patterns relate across pillars.
+Visit [prajwalamte.github.io/AI-Engineering-Patterns](https://prajwalamte.github.io/AI-Engineering-Patterns) to read patterns with full-text search, navigation, dark mode, and an interactive [pattern graph](https://prajwalamte.github.io/AI-Engineering-Patterns/graph/) showing how patterns relate across pillars.
 
 ### Run locally
 

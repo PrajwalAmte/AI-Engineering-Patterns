@@ -224,8 +224,8 @@ class ResolutionGraph:
 
 ## Related Patterns
 
-- **[GraphRAG](/Production-AI-Patterns/patterns/graph-patterns/graph-rag/)** — A clean entity-resolved knowledge graph is the foundation for effective GraphRAG.
-- **[Data Contract Pattern](/Production-AI-Patterns/patterns/data-patterns/data-contract/)** — Data contracts can enforce entity ID standards that reduce the need for resolution.
+- **[GraphRAG](/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/)** — A clean entity-resolved knowledge graph is the foundation for effective GraphRAG.
+- **[Data Contract Pattern](/AI-Engineering-Patterns/patterns/data-patterns/data-contract/)** — Data contracts can enforce entity ID standards that reduce the need for resolution.
 
 ## Further Reading
 

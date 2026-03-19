@@ -159,10 +159,10 @@ For production use, replace the in-memory list with a vector database (Redis wit
 
 ## Related Patterns
 
-- **[LLM Gateway Pattern](/Production-AI-Patterns/patterns/inference-and-serving/llm-gateway/)** — The gateway is the natural integration point for semantic caching.
-- **[Model Router Pattern](/Production-AI-Patterns/patterns/inference-and-serving/model-router/)** — Routing decisions happen before cache lookup in the request pipeline.
-- **[Prompt Compression Pattern](/Production-AI-Patterns/patterns/cost-and-efficiency/prompt-compression/)** — Another cost reduction pattern. Can be combined: compress, then cache.
-- **[Cost Attribution Pattern](/Production-AI-Patterns/patterns/observability/cost-attribution/)** — Track cache hit rates per feature to measure cost savings.
+- **[LLM Gateway Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/llm-gateway/)** — The gateway is the natural integration point for semantic caching.
+- **[Model Router Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/model-router/)** — Routing decisions happen before cache lookup in the request pipeline.
+- **[Prompt Compression Pattern](/AI-Engineering-Patterns/patterns/cost-and-efficiency/prompt-compression/)** — Another cost reduction pattern. Can be combined: compress, then cache.
+- **[Cost Attribution Pattern](/AI-Engineering-Patterns/patterns/observability/cost-attribution/)** — Track cache hit rates per feature to measure cost savings.
 
 ## Further Reading
 
