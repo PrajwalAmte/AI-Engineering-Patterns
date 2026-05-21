@@ -59,19 +59,16 @@ Visit [prajwalamte.github.io/AI-Engineering-Patterns](https://prajwalamte.github
 ### Run locally
 
 ```bash
-cd site
+cd web
 npm install
 npm run dev
 ```
 
-Open [http://localhost:4321](http://localhost:4321).
+Open [http://localhost:3000](http://localhost:3000).
 
 ### Validate pattern frontmatter
 
 ```bash
-cd scripts
-npm install
-cd ..
 node scripts/validate-schema.js
 ```
 
@@ -93,18 +90,19 @@ Every pattern must include a "When NOT to Use It" section. This is what makes th
 
 ```
 ai-engineering-patterns/
-├── site/                      # Astro + Starlight documentation site
-│   ├── src/
-│   │   ├── components/        # PatternGraph interactive visualization
-│   │   ├── content/docs/
-│   │   │   ├── patterns/      # 14 patterns across 10 pillar directories
-│   │   │   ├── graph.mdx      # Interactive pattern relationship graph
-│   │   │   └── guides/        # Getting started, decision guide, glossary
-│   │   └── styles/
-│   └── astro.config.mjs
-├── schema/                    # JSON Schema for pattern frontmatter validation
-├── scripts/                   # validate-schema.js
-├── .github/                   # Actions (deploy, validate), issue templates, PR template
+├── web/                       # Next.js 16 site (App Router)
+│   ├── app/                   # Pages and layouts
+│   ├── components/            # PatternHeader, Sidebar, TOC, ArticleBody, etc.
+│   ├── lib/                   # patterns.ts helpers
+│   ├── public/diagrams/       # Excalidraw SVG exports
+│   └── velite.config.ts       # Content pipeline (Zod schema + markdown)
+├── content/
+│   ├── patterns/              # 20 patterns across 10 pillar directories
+│   ├── case-studies/          # Production case studies
+│   └── guides/                # Getting started, decision guide, glossary
+├── schema/                    # JSON Schema for pattern frontmatter (reference)
+├── scripts/                   # validate-schema.js (runs Velite, checks pillar alignment)
+├── .github/                   # Actions (deploy to GitHub Pages, validate on PR)
 ├── CONTRIBUTING.md
 ├── CODE_OF_CONDUCT.md
 └── LICENSE

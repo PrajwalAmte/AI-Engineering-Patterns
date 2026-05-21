@@ -1,64 +1,45 @@
-import { readFileSync } from "node:fs";
-import { resolve, relative } from "node:path";
-import { glob } from "glob";
-import Ajv from "ajv";
-import matter from "gray-matter";
+import { execSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
-const ROOT = resolve(import.meta.dirname, "..");
-const SCHEMA_PATH = resolve(ROOT, "schema", "pattern.schema.json");
-const PATTERNS_GLOB = "site/src/content/docs/patterns/**/*.{md,mdx}";
+const APP = resolve(import.meta.dirname, '..', 'web')
+const OUT = resolve(APP, '.velite', 'patterns.json')
 
-const schema = JSON.parse(readFileSync(SCHEMA_PATH, "utf-8"));
-const ajv = new Ajv({ allErrors: true });
-const validate = ajv.compile(schema);
-
-const allFiles = await glob(PATTERNS_GLOB, { cwd: ROOT, absolute: true });
-const files = allFiles.filter((f) => !f.endsWith("/index.md") && !f.endsWith("/index.mdx"));
-
-if (files.length === 0) {
-  console.log("No pattern files found to validate.");
-  process.exit(0);
+// Run velite so the output is always fresh. Velite enforces the Zod schema;
+// if any frontmatter field is invalid the build will exit non-zero here.
+console.log('Building content with Velite…')
+try {
+  execSync('npx velite build', { cwd: APP, stdio: 'inherit' })
+} catch {
+  console.error('\nVelite build failed — schema or frontmatter error above.')
+  process.exit(1)
 }
 
-let hasErrors = false;
+const patterns = JSON.parse(readFileSync(OUT, 'utf-8'))
+console.log(`\n${patterns.length} pattern(s) indexed.\n`)
 
-for (const filePath of files) {
-  const relPath = relative(ROOT, filePath);
-  const content = readFileSync(filePath, "utf-8");
-
-  let frontmatter;
-  try {
-    const parsed = matter(content);
-    frontmatter = parsed.data;
-  } catch (err) {
-    console.error(`FAIL ${relPath}: Invalid YAML frontmatter - ${err.message}`);
-    hasErrors = true;
-    continue;
+// Cross-check: pillar field must match the directory segment of the slug.
+let errors = 0
+for (const p of patterns) {
+  const parts = p.slug.split('/')
+  if (parts.length !== 2) {
+    console.error(`FAIL ${p.slug}: slug must be <pillar>/<name>`)
+    errors++
+    continue
   }
-
-  const valid = validate(frontmatter);
-
-  if (!valid) {
-    hasErrors = true;
-    console.error(`FAIL ${relPath}:`);
-    for (const error of validate.errors) {
-      const path = error.instancePath || "(root)";
-      console.error(`  - ${path}: ${error.message}`);
-    }
+  const [dir] = parts
+  if (p.pillar !== dir) {
+    console.error(`FAIL ${p.slug}: pillar "${p.pillar}" does not match directory "${dir}"`)
+    errors++
   } else {
-    const expectedPillar = relPath.split("/").at(-2);
-    if (frontmatter.pillar !== expectedPillar) {
-      console.warn(
-        `WARN ${relPath}: pillar "${frontmatter.pillar}" does not match directory "${expectedPillar}"`
-      );
-    }
-    console.log(`PASS ${relPath}`);
+    console.log(`PASS ${p.slug}`)
   }
 }
 
-if (hasErrors) {
-  console.error("\nValidation failed. Fix the errors above.");
-  process.exit(1);
+if (errors) {
+  console.error(`\n${errors} error(s). Fix the pillar fields above.`)
+  process.exit(1)
 }
 
-console.log(`\nAll ${files.length} pattern(s) passed validation.`);
+console.log(`\nAll ${patterns.length} pattern(s) passed.`)
+

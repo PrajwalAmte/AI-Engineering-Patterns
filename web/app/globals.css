@@ -1,0 +1,19 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+@plugin "@tailwindcss/typography";
+
+/* Class-based dark mode for next-themes */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --accent: #6c63ff;
+  --accent-cyan: #22d3ee;
+  --accent-violet: #a78bfa;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+

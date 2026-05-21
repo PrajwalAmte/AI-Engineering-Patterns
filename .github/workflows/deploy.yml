@@ -24,20 +24,22 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: site/package-lock.json
+          cache-dependency-path: web/package-lock.json
 
       - name: Install dependencies
-        working-directory: site
+        working-directory: web
         run: npm ci
 
       - name: Build site
-        working-directory: site
+        working-directory: web
+        env:
+          NEXT_PUBLIC_BASE_PATH: /AI-Engineering-Patterns
         run: npm run build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site/dist
+          path: web/out
 
   deploy:
     needs: build

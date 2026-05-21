@@ -1,4 +1,4 @@
-# Contributing to Production AI Patterns
+# Contributing to AI Engineering Patterns
 
 Thank you for contributing. This project exists because of community participation.
 
@@ -13,7 +13,7 @@ Thank you for contributing. This project exists because of community participati
 ### Write a Pattern
 
 1. Fork the repository and create a branch from `main`.
-2. Create a new Markdown file in the correct pillar directory under `site/src/content/docs/patterns/`.
+2. Create a new Markdown file in the correct pillar directory under `content/patterns/`.
 3. Follow the pattern template below exactly.
 4. Open a Pull Request. Maintainers will review for accuracy, completeness, neutrality, and fit.
 
@@ -39,7 +39,7 @@ description: "One-line description for SEO and pattern cards."
 ---
 ```
 
-Valid pillar slugs: `inference-and-serving`, `data-patterns`, `reliability`, `retrieval-and-memory`, `observability`, `security-and-trust`, `cost-and-efficiency`, `governance`.
+Valid pillar slugs: `inference-and-serving`, `data-patterns`, `reliability`, `retrieval-and-memory`, `observability`, `security-and-trust`, `cost-and-efficiency`, `governance`, `graph-patterns`, `evaluation-and-testing`.
 
 Valid status values: `proposed`, `emerging`, `validated-in-production`.
 
@@ -82,21 +82,18 @@ Patterns are rejected if they:
 ## Development Setup
 
 ```bash
-cd site
+cd web
 npm install
 npm run dev
 ```
 
-The site runs at `http://localhost:4321`.
+The site runs at `http://localhost:3000`.
 
 ## Schema Validation
 
-Pattern frontmatter is validated against `schema/pattern.schema.json`. To run validation locally:
+Pattern frontmatter is validated by Velite's Zod schema at build time. To run validation locally:
 
 ```bash
-cd scripts
-npm install
-cd ..
 node scripts/validate-schema.js
 ```
 

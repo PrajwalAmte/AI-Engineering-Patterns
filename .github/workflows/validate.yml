@@ -3,11 +3,11 @@ name: Validate Patterns
 on:
   pull_request:
     paths:
-      - "site/src/content/docs/patterns/**/*.md"
-      - "site/src/content/docs/patterns/**/*.mdx"
+      - "content/patterns/**/*.md"
+      - "web/velite.config.ts"
 
 jobs:
-  validate-schema:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,11 +15,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
-      - name: Install validation dependencies
-        run: npm ci --prefix scripts
+      - name: Install app dependencies
+        working-directory: web
+        run: npm ci
 
-      - name: Validate pattern frontmatter
+      - name: Validate patterns via Velite
         run: node scripts/validate-schema.js
 
   build-check:
@@ -31,16 +34,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: site/package-lock.json
+          cache-dependency-path: web/package-lock.json
 
       - name: Install dependencies
-        working-directory: site
+        working-directory: web
         run: npm ci
 
-      - name: Type check
-        working-directory: site
-        run: npx astro check || true
-
-      - name: Build site
-        working-directory: site
+      - name: Build
+        working-directory: web
+        env:
+          NEXT_PUBLIC_BASE_PATH: /AI-Engineering-Patterns
         run: npm run build

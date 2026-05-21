@@ -1,0 +1,187 @@
+[
+  {
+    "title": "Decision Guide",
+    "description": "Answer questions about your AI system to get recommended patterns.",
+    "slug": "decision-guide",
+    "body": "<p>Use this guide to identify which patterns are most relevant to your current situation. Start with the question that best describes your primary concern.</p>\n<h2>I need to reduce costs</h2>\n<p><strong>How are you currently calling LLMs?</strong></p>\n<ul>\n<li>Direct API calls with no intermediary → Start with <a href=\"/AI-Engineering-Patterns/patterns/inference-and-serving/llm-gateway/\">LLM Gateway Pattern</a></li>\n<li>Single provider, single model for everything → Start with <a href=\"/AI-Engineering-Patterns/patterns/inference-and-serving/model-router/\">Model Router Pattern</a></li>\n<li>Seeing many repeated or similar queries → Start with <a href=\"/AI-Engineering-Patterns/patterns/inference-and-serving/semantic-caching/\">Semantic Caching</a></li>\n<li>Long context windows eating your budget → Start with <a href=\"/AI-Engineering-Patterns/patterns/cost-and-efficiency/token-budget/\">Token Budget Pattern</a></li>\n<li>Most queries are simple but you pay for maximum context on every request → Start with <a href=\"/AI-Engineering-Patterns/patterns/cost-and-efficiency/cascading-context-assembly/\">Cascading Context Assembly</a></li>\n</ul>\n<h2>I need to improve reliability</h2>\n<p><strong>What kind of failures are you seeing?</strong></p>\n<ul>\n<li>Provider outages causing downtime → Start with <a href=\"/AI-Engineering-Patterns/patterns/reliability/circuit-breaker/\">Circuit Breaker for LLMs</a></li>\n<li>Quality degradation after prompt changes → Start with <a href=\"/AI-Engineering-Patterns/patterns/governance/prompt-canary-deployment/\">Prompt Canary Deployment</a> and <a href=\"/AI-Engineering-Patterns/patterns/evaluation-and-testing/llm-as-judge/\">LLM-as-Judge</a></li>\n<li>Silent quality drops nobody notices → Start with <a href=\"/AI-Engineering-Patterns/patterns/observability/embedding-drift-detector/\">Embedding Drift Detector</a> and <a href=\"/AI-Engineering-Patterns/patterns/observability/span-level-tracing/\">Span-Level Tracing</a></li>\n</ul>\n<h2>I need better retrieval / RAG</h2>\n<p><strong>What does your knowledge base look like?</strong></p>\n<ul>\n<li>Complex relational data, multi-hop questions → <a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/\">GraphRAG Pattern</a></li>\n<li>Need both keyword and semantic matching → <a href=\"/AI-Engineering-Patterns/patterns/retrieval-and-memory/hybrid-search/\">Hybrid Search Pattern</a></li>\n<li>Retrieval returns stale or outdated content → <a href=\"/AI-Engineering-Patterns/patterns/retrieval-and-memory/retrieval-freshness-watermark/\">Retrieval Freshness Watermark</a></li>\n<li>Retrieval returns redundant/duplicate chunks → <a href=\"/AI-Engineering-Patterns/patterns/data-patterns/semantic-deduplication/\">Semantic Deduplication</a></li>\n<li>Upstream data keeps breaking your pipeline → <a href=\"/AI-Engineering-Patterns/patterns/data-patterns/data-contract/\">Data Contract Pattern</a></li>\n</ul>\n<h2>I need to handle security and compliance</h2>\n<p><strong>What is your primary concern?</strong></p>\n<ul>\n<li>Prompt injection and jailbreak attempts → <a href=\"/AI-Engineering-Patterns/patterns/security-and-trust/input-sanitization/\">Input Sanitization Pattern</a></li>\n<li>Agents calling external tools that return untrusted data → <a href=\"/AI-Engineering-Patterns/patterns/security-and-trust/tool-output-firewall/\">Tool Output Firewall</a></li>\n<li>Need standardized model documentation for compliance → <a href=\"/AI-Engineering-Patterns/patterns/governance/model-card/\">Model Card Pattern</a></li>\n</ul>\n<h2>I need observability</h2>\n<p><strong>What can you not see today?</strong></p>\n<ul>\n<li>What is happening inside multi-step chains → <a href=\"/AI-Engineering-Patterns/patterns/observability/span-level-tracing/\">Span-Level Tracing Pattern</a></li>\n<li>Whether retrieval quality is silently degrading → <a href=\"/AI-Engineering-Patterns/patterns/observability/embedding-drift-detector/\">Embedding Drift Detector</a></li>\n</ul>\n<h2>I am building agent systems</h2>\n<p>Agents combine multiple patterns. A typical production agent stack includes:</p>\n<ol>\n<li><a href=\"/AI-Engineering-Patterns/patterns/inference-and-serving/llm-gateway/\">LLM Gateway Pattern</a> for routing and observability</li>\n<li><a href=\"/AI-Engineering-Patterns/patterns/security-and-trust/input-sanitization/\">Input Sanitization</a> for the front door</li>\n<li><a href=\"/AI-Engineering-Patterns/patterns/security-and-trust/tool-output-firewall/\">Tool Output Firewall</a> for the side door (tool results re-entering context)</li>\n<li><a href=\"/AI-Engineering-Patterns/patterns/reliability/circuit-breaker/\">Circuit Breaker for LLMs</a> for provider resilience</li>\n<li><a href=\"/AI-Engineering-Patterns/patterns/cost-and-efficiency/token-budget/\">Token Budget Pattern</a> for runaway prevention</li>\n<li><a href=\"/AI-Engineering-Patterns/patterns/observability/span-level-tracing/\">Span-Level Tracing</a> for debugging multi-step flows</li>\n</ol>\n<h2>I need graph-based intelligence</h2>\n<p><strong>What are you trying to achieve with graphs?</strong></p>\n<ul>\n<li>Multi-hop questions that connect information across documents → Start with <a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/\">GraphRAG</a></li>\n<li>Non-linear reasoning with branching and merging approaches → Start with <a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-of-thoughts/\">Graph of Thoughts</a></li>\n<li>Deduplicating entities across multiple data sources → Start with <a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/entity-resolution-graph/\">Entity Resolution Graph</a></li>\n<li>Building a knowledge graph for your domain → Start with <a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/\">GraphRAG</a> for the retrieval layer and <a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/entity-resolution-graph/\">Entity Resolution Graph</a> for clean entity data</li>\n</ul>\n<h2>I need to evaluate and test AI quality</h2>\n<p><strong>What is your primary evaluation challenge?</strong></p>\n<ul>\n<li>Need automated quality scoring at scale → Start with <a href=\"/AI-Engineering-Patterns/patterns/evaluation-and-testing/llm-as-judge/\">LLM-as-Judge</a></li>\n<li>Quality is degrading after prompt or model changes → Combine <a href=\"/AI-Engineering-Patterns/patterns/evaluation-and-testing/llm-as-judge/\">LLM-as-Judge</a> with <a href=\"/AI-Engineering-Patterns/patterns/governance/prompt-canary-deployment/\">Prompt Canary Deployment</a></li>\n<li>Need a quality gate before deploying prompt changes → Use <a href=\"/AI-Engineering-Patterns/patterns/governance/prompt-canary-deployment/\">Prompt Canary Deployment</a> with <a href=\"/AI-Engineering-Patterns/patterns/evaluation-and-testing/llm-as-judge/\">LLM-as-Judge</a> as the scoring mechanism</li>\n</ul>",
+    "toc": [
+      {
+        "title": "I need to reduce costs",
+        "url": "#i-need-to-reduce-costs",
+        "items": []
+      },
+      {
+        "title": "I need to improve reliability",
+        "url": "#i-need-to-improve-reliability",
+        "items": []
+      },
+      {
+        "title": "I need better retrieval / RAG",
+        "url": "#i-need-better-retrieval--rag",
+        "items": []
+      },
+      {
+        "title": "I need to handle security and compliance",
+        "url": "#i-need-to-handle-security-and-compliance",
+        "items": []
+      },
+      {
+        "title": "I need observability",
+        "url": "#i-need-observability",
+        "items": []
+      },
+      {
+        "title": "I am building agent systems",
+        "url": "#i-am-building-agent-systems",
+        "items": []
+      },
+      {
+        "title": "I need graph-based intelligence",
+        "url": "#i-need-graph-based-intelligence",
+        "items": []
+      },
+      {
+        "title": "I need to evaluate and test AI quality",
+        "url": "#i-need-to-evaluate-and-test-ai-quality",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "Getting Started",
+    "description": "How to use AI Engineering Patterns and find the right patterns for your system.",
+    "slug": "getting-started",
+    "body": "<p>AI Engineering Patterns is a structured pattern library for engineers building AI systems in production. It is not an awesome list of links, not vendor documentation, and not a research paper collection. It is a curated set of named patterns with descriptions, trade-offs, when-to-use guides, and code examples for every layer of a production AI system.</p>\n<h2>How to Use This Resource</h2>\n<h3>If you know what you are looking for</h3>\n<p>Browse the sidebar. Patterns are organized into 8 pillars. Each pillar covers a distinct layer of a production AI system.</p>\n<h3>If you are not sure where to start</h3>\n<p>Use the <a href=\"/AI-Engineering-Patterns/guides/decision-guide/\">Decision Guide</a> to answer a few questions about your system and get recommended patterns.</p>\n<h3>If you want to understand the landscape</h3>\n<p>Read through the pillars in order. They roughly follow the lifecycle of a request through a production AI system:</p>\n<ol>\n<li><strong>Inference &#x26; Serving</strong> — How requests reach models and how responses come back.</li>\n<li><strong>Data Patterns for AI</strong> — The data foundation every AI system depends on.</li>\n<li><strong>Reliability &#x26; Resilience</strong> — Keeping AI systems working when things go wrong.</li>\n<li><strong>Retrieval &#x26; Memory</strong> — What knowledge AI systems can access and remember.</li>\n<li><strong>Observability &#x26; Monitoring</strong> — Seeing what your AI system is actually doing.</li>\n<li><strong>Security &#x26; Trust</strong> — Guardrails, PII handling, and prompt injection defenses.</li>\n<li><strong>Cost &#x26; Efficiency</strong> — Running AI systems without unbounded spend.</li>\n<li><strong>Governance &#x26; Compliance</strong> — Lineage, model cards, and compliance operations.</li>\n<li><strong>Graph Patterns</strong> — Knowledge graphs, graph-based reasoning, and entity resolution.</li>\n<li><strong>Evaluation &#x26; Testing</strong> — LLM-as-Judge, eval pipelines, and regression testing.</li>\n</ol>\n<h2>Reading a Pattern</h2>\n<p>Every pattern follows the same structure:</p>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Section</th><th>Purpose</th></tr></thead><tbody><tr><td>What It Is</td><td>One paragraph plain-language description</td></tr><tr><td>The Problem It Solves</td><td>What breaks without this pattern</td></tr><tr><td>How It Works</td><td>Step-by-step mechanism with diagrams</td></tr><tr><td>When to Use It</td><td>Specific conditions and workload types</td></tr><tr><td>When not to Use It</td><td>Explicit anti-use-cases</td></tr><tr><td>Trade-offs</td><td>2-4 honest trade-offs</td></tr><tr><td>Failure Modes</td><td>What breaks when the pattern is deployed correctly — trigger, symptom, mitigation</td></tr><tr><td>Implementation Example</td><td>Minimal working code snippet</td></tr><tr><td>Tool Landscape</td><td>Tools that implement or support the pattern</td></tr><tr><td>Related Patterns</td><td>Links to adjacent patterns</td></tr><tr><td>Further Reading</td><td>2-4 high-quality external references</td></tr></tbody></table>\n<p>The <strong>When not to Use It</strong> section is the most important. It is what makes this resource opinionated rather than encyclopedic.</p>\n<h2>Pattern Maturity</h2>\n<p>Each pattern has a status indicating its maturity level:</p>\n<ul>\n<li><strong>Proposed</strong> — Pattern identified, not yet validated in production systems.</li>\n<li><strong>Emerging</strong> — Used by early adopters, trade-offs still being understood.</li>\n<li><strong>Validated in Production</strong> — Widely used by multiple teams, trade-offs well understood.</li>\n</ul>\n<h2>Contributing</h2>\n<p>This is an open-source project. If you have used a pattern in production and want to share it, or if you see something that needs correction, see the <a href=\"https://github.com/PrajwalAmte/AI-Engineering-Patterns/blob/main/CONTRIBUTING.md\">Contributing Guide</a>.</p>",
+    "toc": [
+      {
+        "title": "How to Use This Resource",
+        "url": "#how-to-use-this-resource",
+        "items": [
+          {
+            "title": "If you know what you are looking for",
+            "url": "#if-you-know-what-you-are-looking-for",
+            "items": []
+          },
+          {
+            "title": "If you are not sure where to start",
+            "url": "#if-you-are-not-sure-where-to-start",
+            "items": []
+          },
+          {
+            "title": "If you want to understand the landscape",
+            "url": "#if-you-want-to-understand-the-landscape",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Reading a Pattern",
+        "url": "#reading-a-pattern",
+        "items": []
+      },
+      {
+        "title": "Pattern Maturity",
+        "url": "#pattern-maturity",
+        "items": []
+      },
+      {
+        "title": "Contributing",
+        "url": "#contributing",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "Glossary",
+    "description": "Key terms used throughout AI Engineering Patterns.",
+    "slug": "glossary",
+    "body": "<h2>A</h2>\n<p><strong>Agent</strong> — An AI system that can autonomously plan and execute multi-step tasks using tools and external APIs. Distinguished from simple LLM calls by the ability to take actions beyond text generation.</p>\n<h2>B</h2>\n<p><strong>Batch Inference</strong> — Processing multiple inference requests together rather than individually. Trades latency for throughput and cost efficiency.</p>\n<p><strong>BM25</strong> — A probabilistic keyword-based ranking function used in sparse retrieval. Relies on term frequency and document length normalization rather than learned embeddings.</p>\n<h2>C</h2>\n<p><strong>Canary Deployment</strong> — Releasing a new model or prompt version to a small subset of traffic before full rollout. Limits blast radius of quality regressions.</p>\n<p><strong>Cascading Context Assembly</strong> — A pattern that dynamically assembles context from multiple tiers (cache, metadata, vector store, live retrieval) in order of increasing cost and latency. Stops as soon as a confidence threshold is met, avoiding unnecessary expensive retrievals.</p>\n<p><strong>Chain-of-Thought (CoT)</strong> — Prompting strategy that asks the model to show intermediate reasoning steps. Improves accuracy on complex tasks at the cost of additional output tokens.</p>\n<p><strong>Chunking</strong> — Splitting documents into smaller segments for embedding and retrieval. Chunk size and strategy directly affect retrieval quality.</p>\n<p><strong>Circuit Breaker</strong> — A pattern that monitors failure rates and temporarily stops sending requests to a degraded service. Prevents cascade failures and allows recovery time.</p>\n<p><strong>Context Window</strong> — The maximum number of tokens a model can process in a single request, including both input and output tokens.</p>\n<h2>D</h2>\n<p><strong>Data Contract</strong> — A formal agreement between data producers and consumers specifying schema, quality thresholds, and SLAs. Prevents upstream changes from silently breaking downstream systems.</p>\n<p><strong>Dense Retrieval</strong> — Using learned vector embeddings to find semantically similar documents. Captures meaning rather than exact keyword matches.</p>\n<p><strong>Distribution Shift</strong> — When the statistical properties of input data in production differ from what was expected during development or training.</p>\n<h2>E</h2>\n<p><strong>Embedding</strong> — A fixed-size vector representation of text (or other data) in a continuous vector space. Similar meanings map to nearby vectors.</p>\n<p><strong>Embedding Drift</strong> — Gradual or sudden changes in the distribution of embedding vectors over time, caused by new vocabulary, shifting user behaviour, or model updates. Detected by monitoring statistical properties of embedding populations.</p>\n<p><strong>Eval Dataset</strong> — A curated set of input-output pairs used to measure model or system quality. Distinct from training data.</p>\n<h2>F</h2>\n<p><strong>Fallback Chain</strong> — An ordered list of alternative providers or models to try when the primary option fails or degrades.</p>\n<p><strong>Feature Store</strong> — A centralized repository for storing, versioning, and serving ML features. Ensures consistency between training and serving.</p>\n<p><strong>Fine-Tuning</strong> — Continuing the training of a pre-trained model on domain-specific data to improve performance on targeted tasks.</p>\n<h2>G</h2>\n<p><strong>Graceful Degradation</strong> — Returning a reduced-quality but still useful response when the full system is unavailable, rather than returning an error.</p>\n<p><strong>GraphRAG</strong> — Retrieval-augmented generation that uses knowledge graphs instead of (or alongside) vector stores. Handles relational and multi-hop queries.</p>\n<p><strong>Guardrails</strong> — Input and output validation layers that enforce safety, quality, and compliance constraints on LLM interactions.</p>\n<h2>H</h2>\n<p><strong>Hallucination</strong> — When a model generates content that is factually incorrect, fabricated, or not grounded in the provided context.</p>\n<p><strong>Human-in-the-Loop (HITL)</strong> — A design pattern where certain automated decisions require human approval before execution. Used for high-risk or high-stakes actions.</p>\n<p><strong>Hybrid Search</strong> — Combining dense (vector) and sparse (keyword) retrieval methods and merging their results. Consistently outperforms either method alone.</p>\n<h2>I</h2>\n<p><strong>Inference</strong> — The process of running a trained model on new inputs to produce outputs. In production AI, this typically means making API calls to LLM providers.</p>\n<p><strong>Inference-Time Compute</strong> — Allocating additional computation (more reasoning steps, multiple samples) at inference time to improve quality on hard queries.</p>\n<h2>L</h2>\n<p><strong>Lakehouse</strong> — A data architecture combining data lake flexibility with data warehouse reliability. Provides ACID transactions, versioning, and schema enforcement.</p>\n<p><strong>Lineage</strong> — The complete tracking of data from raw source through transformations, training, and inference. Required for compliance and debugging.</p>\n<p><strong>LLM Gateway</strong> — A centralized proxy layer between applications and LLM providers that handles routing, authentication, rate limiting, logging, and failover.</p>\n<h2>M</h2>\n<p><strong>Model Card</strong> — Standardized documentation of a model's capabilities, limitations, intended uses, training data, and known failure modes.</p>\n<p><strong>Model Router</strong> — A system that routes inference requests to different models based on query complexity, cost targets, or latency requirements.</p>\n<h2>O</h2>\n<p><strong>Observability</strong> — The ability to understand the internal state of a system from its external outputs. For AI systems, this includes tracing, metrics, logging, and quality monitoring.</p>\n<h2>P</h2>\n<p><strong>Pagefind</strong> — A static site search library that indexes content at build time. Used by this site for full-text search without external services.</p>\n<p><strong>PII (Personally Identifiable Information)</strong> — Any data that could identify a specific individual. Must be detected and handled before entering prompts or logs.</p>\n<p><strong>Policy-as-Code</strong> — Encoding compliance rules as machine-checkable assertions that run automatically in CI/CD pipelines.</p>\n<p><strong>Prompt Canary Deployment</strong> — A governance pattern that routes a small percentage of live traffic to a new prompt version while the majority continues on the current version. Automated quality metrics decide whether to promote or roll back the candidate.</p>\n<p><strong>Prompt Injection</strong> — An attack where malicious instructions are embedded in user input to manipulate model behavior. The LLM equivalent of SQL injection.</p>\n<p><strong>Prompt Regression</strong> — When changes to prompts, system instructions, or models cause quality to degrade on previously passing test cases.</p>\n<h2>R</h2>\n<p><strong>RAG (Retrieval-Augmented Generation)</strong> — A pattern that retrieves relevant context from external sources and includes it in the prompt before generation. Grounds model outputs in actual data.</p>\n<p><strong>Reranking</strong> — A two-stage retrieval approach where a first-pass retriever returns candidates and a second-pass model scores and reorders them for relevance.</p>\n<p><strong>Retrieval Freshness Watermark</strong> — A metadata-driven pattern that stamps every retrieved chunk with a freshness timestamp and TTL, allowing the retrieval layer to filter or flag stale content before it enters the LLM context.</p>\n<h2>S</h2>\n<p><strong>Semantic Caching</strong> — Caching LLM responses indexed by the semantic meaning of queries rather than exact string matches. Serves similar (not just identical) queries from cache.</p>\n<p><strong>Semantic Deduplication</strong> — A data-quality pattern that detects and merges near-duplicate records using embedding similarity rather than exact-match keys. Prevents redundant context from inflating retrieval results and token costs.</p>\n<p><strong>Shadow Mode</strong> — Running a new model in parallel on live traffic without serving its outputs to users. Used to compare quality before switching.</p>\n<p><strong>SLO (Service Level Objective)</strong> — A target value for a service metric (latency, quality, cost) that defines acceptable performance. More specific than an SLA.</p>\n<p><strong>Span</strong> — A single unit of work within a trace. In AI systems, spans typically represent retrieval, prompt construction, inference, and postprocessing steps.</p>\n<p><strong>Sparse Retrieval</strong> — Keyword-based retrieval methods (like BM25) that match on exact terms rather than learned representations.</p>\n<p><strong>Structured Output</strong> — Constraining model output to match a predefined schema (JSON, XML) using tools like Pydantic or Zod. Eliminates parsing failures.</p>\n<h2>T</h2>\n<p><strong>TTFT (Time to First Token)</strong> — The latency between sending a request and receiving the first token of the response. Critical for perceived responsiveness in streaming applications.</p>\n<p><strong>Token</strong> — The fundamental unit of text that LLMs process. A token is roughly 3/4 of a word in English. Costs are typically measured per token.</p>\n<p><strong>Token Budget</strong> — A hard limit on the number of input and/or output tokens per request. Prevents unbounded costs from long contexts or verbose outputs.</p>\n<p><strong>Tool Output Firewall</strong> — A security pattern that validates, sanitizes, and constrains data returned by external tools before it re-enters the LLM context window. Prevents indirect prompt injection and data exfiltration through tool results.</p>\n<p><strong>Train/Serve Skew</strong> — Differences between the data or features used during model training and those available during serving. A common source of production quality issues.</p>\n<h2>V</h2>\n<p><strong>Vector Store</strong> — A database optimized for storing and querying high-dimensional vectors (embeddings). The storage layer for dense retrieval in RAG systems.</p>",
+    "toc": [
+      {
+        "title": "A",
+        "url": "#a",
+        "items": []
+      },
+      {
+        "title": "B",
+        "url": "#b",
+        "items": []
+      },
+      {
+        "title": "C",
+        "url": "#c",
+        "items": []
+      },
+      {
+        "title": "D",
+        "url": "#d",
+        "items": []
+      },
+      {
+        "title": "E",
+        "url": "#e",
+        "items": []
+      },
+      {
+        "title": "F",
+        "url": "#f",
+        "items": []
+      },
+      {
+        "title": "G",
+        "url": "#g",
+        "items": []
+      },
+      {
+        "title": "H",
+        "url": "#h",
+        "items": []
+      },
+      {
+        "title": "I",
+        "url": "#i",
+        "items": []
+      },
+      {
+        "title": "L",
+        "url": "#l",
+        "items": []
+      },
+      {
+        "title": "M",
+        "url": "#m",
+        "items": []
+      },
+      {
+        "title": "O",
+        "url": "#o",
+        "items": []
+      },
+      {
+        "title": "P",
+        "url": "#p",
+        "items": []
+      },
+      {
+        "title": "R",
+        "url": "#r",
+        "items": []
+      },
+      {
+        "title": "S",
+        "url": "#s",
+        "items": []
+      },
+      {
+        "title": "T",
+        "url": "#t",
+        "items": []
+      },
+      {
+        "title": "V",
+        "url": "#v",
+        "items": []
+      }
+    ]
+  }
+]
