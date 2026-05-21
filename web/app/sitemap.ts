@@ -1,6 +1,8 @@
 import type { MetadataRoute } from 'next'
 import { patterns, guides, caseStudies } from '@/.velite'
 
+export const dynamic = 'force-static'
+
 const BASE = 'https://prajwalamte.github.io/AI-Engineering-Patterns'
 
 export default function sitemap(): MetadataRoute.Sitemap {
