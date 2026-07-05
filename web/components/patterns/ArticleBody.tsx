@@ -21,6 +21,10 @@ export function ArticleBody({ html }: Props) {
     codeMermaid.forEach(el => {
       const pre = el.parentElement
       if (pre?.tagName === 'PRE') {
+        // Extract text content from the code tag
+        const textContent = el.textContent || ''
+        // Replace the code tag content with just the text, add mermaid class
+        pre.innerHTML = textContent
         pre.classList.add('mermaid')
         diagrams.push(pre)
       }
