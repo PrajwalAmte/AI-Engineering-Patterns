@@ -11,7 +11,21 @@ export function ArticleBody({ html }: Props) {
 
   useEffect(() => {
     if (!ref.current) return
-    const diagrams = ref.current.querySelectorAll<HTMLElement>('pre.mermaid')
+    
+    // Find both <pre class="mermaid"> and <pre><code class="language-mermaid">
+    const preMermaid = ref.current.querySelectorAll<HTMLElement>('pre.mermaid')
+    const codeMermaid = ref.current.querySelectorAll<HTMLElement>('code.language-mermaid')
+    const diagrams: HTMLElement[] = []
+    
+    preMermaid.forEach(el => diagrams.push(el))
+    codeMermaid.forEach(el => {
+      const pre = el.parentElement
+      if (pre?.tagName === 'PRE') {
+        pre.classList.add('mermaid')
+        diagrams.push(pre)
+      }
+    })
+    
     if (!diagrams.length) return
 
     const isDark = document.documentElement.classList.contains('dark')
@@ -23,7 +37,7 @@ export function ArticleBody({ html }: Props) {
         securityLevel: 'strict',
         fontFamily: 'var(--font-geist-sans), system-ui, sans-serif',
       })
-      mermaid.run({ nodes: Array.from(diagrams) })
+      mermaid.run({ nodes: diagrams })
     })
   }, [html])
 
