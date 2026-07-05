@@ -7,12 +7,12 @@ const PILLARS = [
   'data-patterns',
   'reliability',
   'retrieval-and-memory',
-  'observability',
+  'observability-and-evaluation',
   'security-and-trust',
   'cost-and-efficiency',
   'governance',
   'graph-patterns',
-  'evaluation-and-testing',
+  'loop-engineering',
 ] as const
 
 const patterns = defineCollection({
@@ -64,14 +64,13 @@ const guides = defineCollection({
 })
 
 export default defineConfig({
-  // root: '..' = repo root (one level above this config file in app/).
-  // Content lives at repo-root/content/, output goes into app/.velite/ and app/public/static/.
-  // Using the repo root avoids the Turbopack panic caused by a symlink pointing outside app/.
+  // root: '..' = repo root (one level above this config file in web/).
+  // Content lives at repo-root/content/, output goes into .velite/ and public/static/ (relative to web/).
   root: '..',
   output: {
-    // Paths are relative to root (repo root) → places output inside the app/ dir.
-    data: 'app/.velite',
-    assets: 'app/public/static',
+    // Paths are relative to the config file's directory (web/)
+    data: '.velite',
+    assets: 'public/static',
     base: '/static/',
     name: '[name]-[hash:6].[ext]',
     clean: true,

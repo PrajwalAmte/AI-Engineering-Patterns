@@ -212,7 +212,7 @@ class PromptCanaryDeployer:
 ## Related Patterns
 
 - **[Model Card Pattern](/AI-Engineering-Patterns/patterns/governance/model-card/)** — Model cards should reference which prompt version was evaluated with the model.
-- **[LLM-as-Judge](/AI-Engineering-Patterns/patterns/evaluation-and-testing/llm-as-judge/)** — Provides the quality scoring mechanism for canary metrics.
+- **[LLM-as-Judge](/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/)** — Provides the quality scoring mechanism for canary metrics.
 - **[Circuit Breaker for LLMs](/AI-Engineering-Patterns/patterns/reliability/circuit-breaker/)** — Circuit breaker protects against provider failures; prompt canary protects against self-inflicted prompt regressions.
 - **[Span-Level Tracing](/AI-Engineering-Patterns/patterns/observability/span-level-tracing/)** — Tag traces with prompt version ID for per-version performance analysis.
 

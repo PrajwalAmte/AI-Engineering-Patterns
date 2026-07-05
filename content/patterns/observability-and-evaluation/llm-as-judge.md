@@ -1,17 +1,17 @@
 ---
 title: LLM-as-Judge
-pillar: evaluation-and-testing
+pillar: observability-and-evaluation
 status: validated-in-production
 tags: [evaluation, llm-judge, quality, testing, automated-eval]
 related:
   - Span-Level Tracing
   - Circuit Breaker for LLMs
-  - Model Card Pattern
+  - Model Card
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-03"
+last_updated: "2026-07"
 description: Use a strong LLM to evaluate outputs from another model, replacing expensive human evaluation with scalable automated quality scoring.
 sidebar:
-  order: 1
+  order: 2
 ---
 
 ## What It Is
@@ -30,7 +30,7 @@ LLM-as-Judge bridges the gap: it scales like automated checks but evaluates like
 
 ## How It Works
 
-<pre class="mermaid">
+```mermaid
 flowchart TD
     A["Candidate model output"] --> B["Build judge prompt (query + rubric + output)"]
     C["Reference answer (optional)"] --> B
@@ -40,7 +40,7 @@ flowchart TD
     F --> G{"Regression detected?"}
     G -->|"Yes"| H["Alert team or block release"]
     G -->|"No"| I["Approve iteration"]
-</pre>
+```
 
 1. **Define evaluation criteria** — Create a rubric with specific dimensions: accuracy, helpfulness, safety, formatting, reasoning quality. Each dimension gets a clear scoring guide.
 2. **Construct the judge prompt** — Include the original query, the candidate's output, the rubric, and optionally a reference answer. Ask the judge to score each dimension and provide reasoning.
@@ -56,7 +56,7 @@ flowchart TD
 - You have a stronger model available as the judge (e.g., GPT-4o judging GPT-4o-mini outputs).
 - You want to scale evaluation across hundreds of test cases that would take human reviewers days.
 
-## When not to Use It
+## When NOT to Use It
 
 - The candidate model is as strong or stronger than any available judge. The judge cannot reliably evaluate outputs it could not produce itself. Using GPT-4o-mini to judge GPT-4o outputs produces unreliable scores.
 - Your evaluation criteria are purely objective and can be checked programmatically (exact match, JSON schema validation, code compilation). Deterministic checks are cheaper and more reliable.
@@ -72,20 +72,11 @@ flowchart TD
 
 ## Failure Modes
 
-### Judge-Candidate Collusion
-**Trigger**: The judge model and candidate model are from the same family or share training biases.
-**Symptom**: The judge consistently rates outputs from its own family higher than outputs from other models, regardless of objective quality. Evaluation appears to show your model is great — until humans disagree.
-**Mitigation**: Use judges from a different model family than the candidate. Cross-validate with human evaluation on a sample. Track judge-human agreement rate as a meta-metric.
-
-### Rubric Ambiguity Inflates Scores
-**Trigger**: Evaluation rubric uses subjective terms ("good," "helpful," "appropriate") without concrete criteria.
-**Symptom**: All scores cluster near the top of the scale. The judge rarely gives low marks because the rubric does not define what failure looks like. The metric loses discriminative power.
-**Mitigation**: Define each score level with explicit examples ("A score of 1 means..."). Include negative examples in the rubric. Test on known-bad outputs to verify the rubric produces low scores where expected.
-
-### Position Bias Skewing A/B Comparisons
-**Trigger**: In pairwise evaluation (A vs. B), the judge consistently favors whichever response appears first in the prompt.
-**Symptom**: A/B test results depend on presentation order rather than actual quality. Leads to incorrect conclusions about which model or prompt is better.
-**Mitigation**: Run every comparison in both orders (A-B and B-A) and average. Discard cases where the judge disagreed with itself. Report the self-consistency rate.
+| Trigger | Symptom | Mitigation |
+|---------|---------|-----------|
+| Judge model and candidate from same family | Judge consistently rates its own family higher regardless of objective quality | Use judges from different model family; cross-validate with human eval on sample; track judge-human agreement |
+| Rubric ambiguity (subjective terms without examples) | All scores cluster near top; metric loses discriminative power | Define each score level with explicit examples; include negative examples; test on known-bad outputs |
+| Position bias in A/B comparisons | Results depend on presentation order not actual quality | Run every comparison both ways (A-B and B-A); average results; report self-consistency rate |
 
 ## Implementation Example
 
@@ -227,22 +218,22 @@ def run_eval_suite(
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| OpenAI Evals | Framework | Structured eval framework with built-in LLM-as-Judge templates |
-| Braintrust | Platform | Production eval platform with LLM judge scoring and drift detection |
-| Langfuse | Open-source | Tracing + evaluation with LLM-as-Judge scoring integration |
-| DeepEval | Open-source | Python framework with 14+ LLM-evaluated metrics out of the box |
-| Ragas | Open-source | RAG-specific evaluation framework using LLM judges for faithfulness and relevance |
+**LLM-as-Judge frameworks and platforms:**
+- OpenAI Evals — Structured eval framework with built-in LLM-as-Judge templates
+- Braintrust — Production eval platform with LLM judge scoring and drift detection
+- Langfuse — Tracing + evaluation with LLM-as-Judge scoring integration
+- DeepEval — Python framework with 14+ LLM-evaluated metrics out of the box
+- Ragas — RAG-specific evaluation framework using LLM judges for faithfulness and relevance
 
-## Related Patterns
-
-- **[Span-Level Tracing](/AI-Engineering-Patterns/patterns/observability/span-level-tracing/)** — Provides the raw data (inputs, outputs, latencies) that the judge evaluates.
-- **[Circuit Breaker for LLMs](/AI-Engineering-Patterns/patterns/reliability/circuit-breaker/)** — Quality scores from LLM-as-Judge can feed into circuit breaker trip conditions.
-- **[Model Card Pattern](/AI-Engineering-Patterns/patterns/governance/model-card/)** — Eval results should be documented in the model card.
+**Observability platforms that support quality eval:**
+- Weights & Biases — Track evals alongside metrics and traces
+- Arize — Production monitoring with LLM-as-Judge quality scorers
+- WhyLabs — Continuous eval pipeline with quality guardrails
 
 ## Further Reading
 
-- [Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena](https://arxiv.org/abs/2306.05685)
-- [OpenAI Evals Framework](https://github.com/openai/evals)
-- [DeepEval Documentation](https://docs.confident-ai.com/)
+1. [Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena — Zheng et al., 2023](https://arxiv.org/abs/2306.05685)
+2. [OpenAI Evals Framework — GitHub](https://github.com/openai/evals)
+3. [DeepEval Documentation](https://docs.confident-ai.com/)
+4. [The State of Evaluation for Language Models — NLLB Team, 2023](https://arxiv.org/abs/2310.16154)
+5. [Continuous Evaluation of Large Language Model Systems — Langfuse Blog, 2024](https://langfuse.com/blog/llm-evaluation)

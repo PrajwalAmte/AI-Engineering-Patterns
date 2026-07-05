@@ -7,12 +7,12 @@ export const PILLAR_ORDER = [
   'retrieval-and-memory',
   'data-patterns',
   'reliability',
-  'observability',
+  'observability-and-evaluation',
   'security-and-trust',
   'cost-and-efficiency',
   'governance',
   'graph-patterns',
-  'evaluation-and-testing',
+  'loop-engineering',
 ] as const
 
 export const PILLAR_LABELS: Record<string, string> = {
@@ -20,12 +20,12 @@ export const PILLAR_LABELS: Record<string, string> = {
   'retrieval-and-memory': 'Retrieval & Memory',
   'data-patterns': 'Data Patterns',
   'reliability': 'Reliability & Resilience',
-  'observability': 'Observability',
+  'observability-and-evaluation': 'Observability & Evaluation',
   'security-and-trust': 'Security & Trust',
   'cost-and-efficiency': 'Cost & Efficiency',
   'governance': 'Governance',
   'graph-patterns': 'Graph Patterns',
-  'evaluation-and-testing': 'Evaluation & Testing',
+  'loop-engineering': 'Loop Engineering',
 }
 
 export const STATUS_LABELS: Record<string, string> = {

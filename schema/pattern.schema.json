@@ -18,12 +18,12 @@
         "data-patterns",
         "reliability",
         "retrieval-and-memory",
-        "observability",
+        "observability-and-evaluation",
         "security-and-trust",
         "cost-and-efficiency",
         "governance",
         "graph-patterns",
-        "evaluation-and-testing"
+        "loop-engineering"
       ],
       "description": "The pillar this pattern belongs to"
     },

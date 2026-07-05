@@ -3,16 +3,18 @@ title: "Perplexity AI – Real-Time AI Search Engine"
 description: "How Perplexity delivers sub-2s grounded answers at scale using hybrid retrieval, multi-model routing, and aggressive caching."
 subject: "Perplexity AI"
 patterns:
-  - "Hybrid Search Pattern"
-  - "Model Router Pattern"
+  - "Hybrid Search"
+  - "Model Router"
   - "Semantic Caching"
-  - "Span-Level Tracing Pattern"
+  - "Span-Level Tracing"
   - "Token Budget Pattern"
   - "Retrieval Freshness Watermark"
-last_updated: "2026-05"
+last_updated: "2026-07"
 sidebar:
   order: 1
 ---
+
+> *This analysis is based on public engineering blog posts, conference talks, patent filings, and observable system behaviour. It is not official documentation from the company.*
 
 ## System Context
 
@@ -36,12 +38,12 @@ Without deliberate pattern application, a naive RAG-over-live-web pipeline fails
 
 | Pattern | Role in This System |
 |---------|---------------------|
-| [Hybrid Search Pattern](/AI-Engineering-Patterns/patterns/retrieval-and-memory/hybrid-search/) | Combines BM25 keyword matching (for entity names, URLs, exact terms) with dense vector search (for semantic intent) to retrieve high-quality candidates from the web index |
-| [Retrieval Freshness Watermark](/AI-Engineering-Patterns/patterns/retrieval-and-memory/retrieval-freshness-watermark/) | Stamps each retrieved chunk with a recency score; exponential decay deprioritises older pages for time-sensitive queries |
-| [Model Router Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/model-router/) | Routes queries between a fast small model (Quick mode) and a frontier model (Pro mode) based on query complexity and user tier |
-| [Semantic Caching](/AI-Engineering-Patterns/patterns/inference-and-serving/semantic-caching/) | Caches full answer payloads indexed by query embedding; absorbs repeated popular queries without hitting retrieval or inference |
-| [Token Budget Pattern](/AI-Engineering-Patterns/patterns/cost-and-efficiency/token-budget/) | Caps the context window used for synthesis; freshness-ranked chunks fill the budget, lowest-ranked are dropped when the limit is reached |
-| [Span-Level Tracing Pattern](/AI-Engineering-Patterns/patterns/observability/span-level-tracing/) | Instruments every pipeline stage (cache lookup, retrieval, reranking, inference) with named spans; feeds latency dashboards and SLO alerting |
+| Hybrid Search | Combines BM25 keyword matching (for entity names, URLs, exact terms) with dense vector search (for semantic intent) to retrieve high-quality candidates from the web index |
+| Retrieval Freshness Watermark | Stamps each retrieved chunk with a recency score; exponential decay deprioritises older pages for time-sensitive queries |
+| Model Router | Routes queries between a fast small model (Quick mode) and a frontier model (Pro mode) based on query complexity and user tier |
+| Semantic Caching | Caches full answer payloads indexed by query embedding; absorbs repeated popular queries without hitting retrieval or inference |
+| Token Budget Pattern | Caps the context window used for synthesis; freshness-ranked chunks fill the budget, lowest-ranked are dropped when the limit is reached |
+| Span-Level Tracing | Instruments every pipeline stage (cache lookup, retrieval, reranking, inference) with named spans; feeds latency dashboards and SLO alerting |
 
 <pre class="mermaid">
 flowchart LR
@@ -193,6 +195,15 @@ sequenceDiagram
 - **Pro-mode upsell requires measurable quality differentiation.** The model router creates the conditions for a two-tier product. To justify the premium tier, you need quality differences you can demonstrate — which requires LLM-as-Judge or equivalent evaluation running per tier, per day.
 - **Design citation format into the model, not into the prompt.** Prompting a general-purpose model to produce inline citations reliably requires complex instructions that consume tokens and frequently fail on shorter models. Fine-tuning or selecting a model already trained on the citation format makes the behaviour deterministic and frees context budget for content.
 - **Your model router must configure the pipeline, not just select the model.** If routing only swaps the LLM at inference time, you leave cost savings on the table. Retrieval depth, cache TTL, and token budget should all be functions of the routing decision — resolved at the start of the request, before any retrieval begins.
+
+## What This Analysis Cannot Tell You
+
+- **Exact model versions and training details** — Which specific model versions are deployed, how Sonar models are fine-tuned, and what training data is used remain proprietary
+- **Cache hit rates and TTL strategies** — Actual cache performance metrics, TTL values per query class, and cache invalidation policies are not publicly documented
+- **Infrastructure and scaling details** — Server architecture, geographic distribution, autoscaling policies, and cost per query at current scale
+- **Ranking algorithm specifics** — Exact scoring functions for freshness weighting, reranker model architecture, and BM25 parameter tuning
+- **Quality control and guardrails** — How Perplexity validates answer quality, detects and filters hallucinations, and handles adversarial queries
+- **Business metrics** — Actual conversion rates from free to Pro, query volume distribution across tiers, and unit economics
 
 ## References
 

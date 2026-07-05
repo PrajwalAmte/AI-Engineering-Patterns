@@ -20,7 +20,7 @@ Use this guide to identify which patterns are most relevant to your current situ
 **What kind of failures are you seeing?**
 
 - Provider outages causing downtime → Start with [Circuit Breaker for LLMs](/AI-Engineering-Patterns/patterns/reliability/circuit-breaker/)
-- Quality degradation after prompt changes → Start with [Prompt Canary Deployment](/AI-Engineering-Patterns/patterns/governance/prompt-canary-deployment/) and [LLM-as-Judge](/AI-Engineering-Patterns/patterns/evaluation-and-testing/llm-as-judge/)
+- Quality degradation after prompt changes → Start with [Prompt Canary Deployment](/AI-Engineering-Patterns/patterns/governance/prompt-canary-deployment/) and [LLM-as-Judge](/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/)
 - Silent quality drops nobody notices → Start with [Embedding Drift Detector](/AI-Engineering-Patterns/patterns/observability/embedding-drift-detector/) and [Span-Level Tracing](/AI-Engineering-Patterns/patterns/observability/span-level-tracing/)
 
 ## I need better retrieval / RAG
@@ -72,6 +72,6 @@ Agents combine multiple patterns. A typical production agent stack includes:
 
 **What is your primary evaluation challenge?**
 
-- Need automated quality scoring at scale → Start with [LLM-as-Judge](/AI-Engineering-Patterns/patterns/evaluation-and-testing/llm-as-judge/)
-- Quality is degrading after prompt or model changes → Combine [LLM-as-Judge](/AI-Engineering-Patterns/patterns/evaluation-and-testing/llm-as-judge/) with [Prompt Canary Deployment](/AI-Engineering-Patterns/patterns/governance/prompt-canary-deployment/)
-- Need a quality gate before deploying prompt changes → Use [Prompt Canary Deployment](/AI-Engineering-Patterns/patterns/governance/prompt-canary-deployment/) with [LLM-as-Judge](/AI-Engineering-Patterns/patterns/evaluation-and-testing/llm-as-judge/) as the scoring mechanism
+- Need automated quality scoring at scale → Start with [LLM-as-Judge](/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/)
+- Quality is degrading after prompt or model changes → Combine [LLM-as-Judge](/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/) with [Prompt Canary Deployment](/AI-Engineering-Patterns/patterns/governance/prompt-canary-deployment/)
+- Need a quality gate before deploying prompt changes → Use [Prompt Canary Deployment](/AI-Engineering-Patterns/patterns/governance/prompt-canary-deployment/) with [LLM-as-Judge](/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/) as the scoring mechanism

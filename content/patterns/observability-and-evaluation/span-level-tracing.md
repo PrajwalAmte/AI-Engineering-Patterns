@@ -9,7 +9,7 @@ related:
   - LLM Gateway
   - Guardrails
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-03"
+last_updated: "2026-07"
 description: Trace every step of an AI pipeline with latency and token counts per span for debugging and optimization.
 sidebar:
   order: 1
@@ -32,7 +32,7 @@ Traditional APM tools instrument HTTP calls and database queries. They do not in
 
 ## How It Works
 
-<pre class="mermaid">
+```mermaid
 flowchart TD
     A["Request received"] --> B["Start trace"]
     B --> C["Span: input validation"]
@@ -45,7 +45,7 @@ flowchart TD
     F --> G["Span: output validation"]
     G --> H["Export trace to backend"]
     H --> I["Dashboards, queries, and alerts"]
-</pre>
+```
 
 1. Each pipeline execution creates a trace with a unique ID.
 2. Every significant operation within the pipeline creates a child span.
@@ -61,7 +61,7 @@ flowchart TD
 - You need to answer questions like "why was this response slow?" or "which step consumed the most tokens?"
 - You are optimizing pipeline performance and need data on where time and tokens are actually spent.
 
-## When not to Use It
+## When NOT to Use It
 
 - Your AI integration is a single, direct LLM API call with no pipeline. A single API call does not benefit from span-level decomposition. Request-level metrics are sufficient.
 - You are in early prototyping where the pipeline changes daily. Instrumentation code becomes maintenance overhead that slows iteration. Add tracing when the pipeline stabilizes.
@@ -76,20 +76,11 @@ flowchart TD
 
 ## Failure Modes
 
-### Span Cardinality Explosion
-**Trigger**: Dynamic span names (e.g., including user IDs, query text, or tool names in span identifiers) create unbounded unique span types.
-**Symptom**: Trace backend storage costs spike. Dashboards become unusable because every span is "unique." Aggregation and alerting break because there are no stable span groups to monitor.
-**Mitigation**: Enforce a fixed span name taxonomy in code (e.g., `retrieve`, `generate`, `rerank`). Pass dynamic values as span attributes, not span names.
-
-### Missing Spans on Async or Parallel Steps
-**Trigger**: Pipeline steps that run in parallel (async retrieval, concurrent tool calls) are not properly linked to the parent trace context.
-**Symptom**: Traces show gaps — the parent span completes but child spans are either missing or appear as orphaned root spans. Latency analysis underreports actual work.
-**Mitigation**: Explicitly propagate trace context into async workers and thread pools. Test tracing specifically for parallel pipeline paths.
-
-### PII Leakage in Trace Attributes
-**Trigger**: Span attributes include full prompt text or user queries without redaction, and traces are exported to a shared or third-party backend.
-**Symptom**: Sensitive user data is visible in trace dashboards accessible to multiple teams or stored in a third-party service, violating privacy policies.
-**Mitigation**: Apply a redaction filter in the trace exporter pipeline. Only store prompt hashes or truncated previews by default. Full content should require explicit opt-in with access controls.
+| Trigger | Symptom | Mitigation |
+|---------|---------|-----------|
+| Dynamic span names (user ID, query text) | Unbounded unique span types; storage costs spike; dashboards unusable | Enforce fixed span name taxonomy; pass dynamic values as attributes not names |
+| Async/parallel pipeline steps not linked | Traces have gaps; child spans missing or orphaned; underreported latency | Explicitly propagate trace context into async workers; test tracing on parallel paths |
+| PII in trace attributes (full prompts) | Sensitive user data visible in dashboards/third-party backends | Apply redaction filter in exporter; store only hashes or truncated previews by default |
 
 ## Implementation Example
 
@@ -212,24 +203,21 @@ For production use, integrate with OpenTelemetry SDKs instead of a custom implem
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| Langfuse | Open-source LLM observability | Purpose-built for LLM tracing with cost tracking and evaluation |
-| Arize Phoenix | Open-source | LLM traces with embedding drift detection |
-| Langsmith | Managed (LangChain) | Deep integration with LangChain, traces chain executions |
-| Helicone | Managed proxy | Request-level tracing at the gateway, less granular than span-level |
-| OpenTelemetry + Jaeger | Open-source infrastructure | Generic tracing adapted for AI with custom span attributes |
-| Datadog LLM Observability | Managed APM | Extends existing Datadog with LLM-specific spans |
+**Production tracing platforms for AI:**
+- Langfuse — Open-source LLM observability with cost tracking and evaluation
+- Arize Phoenix — Open-source traces with embedding drift detection
+- Langsmith — Managed platform with deep LangChain integration
+- OpenTelemetry + Jaeger — Generic tracing infrastructure adapted for AI
+- Datadog LLM Observability — Extends Datadog APM with LLM-specific spans
 
-## Related Patterns
-
-- **[Cost Attribution Pattern](/AI-Engineering-Patterns/patterns/observability/cost-attribution/)** — Uses span-level token and cost data to attribute spend per feature and user.
-- **[Quality Drift Detection](/AI-Engineering-Patterns/patterns/observability/quality-drift-detection/)** — Aggregates quality signals from traced outputs over time.
-- **[Prompt Logging Pattern](/AI-Engineering-Patterns/patterns/observability/prompt-logging/)** — Span attributes can include prompt content for debugging. Balance with privacy.
-- **[LLM Gateway Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/llm-gateway/)** — The gateway produces the inference span. Pipeline tracing wraps around it.
+**Gateway-level tracing:**
+- Helicone — Managed proxy for request-level tracing (less granular)
+- Braintrust — LLM monitoring with trace collection
 
 ## Further Reading
 
-- [Langfuse Tracing Documentation](https://langfuse.com/docs/tracing)
-- [OpenTelemetry for LLMs — Arize AI](https://docs.arize.com/phoenix/tracing/llm-traces)
-- [Distributed Tracing — OpenTelemetry Concepts](https://opentelemetry.io/docs/concepts/signals/traces/)
+1. [Langfuse Tracing Documentation](https://langfuse.com/docs/tracing)
+2. [OpenTelemetry for LLMs — Arize AI](https://docs.arize.com/phoenix/tracing/llm-traces)
+3. [Distributed Tracing — OpenTelemetry Concepts](https://opentelemetry.io/docs/concepts/signals/traces/)
+4. [Observability for Large Language Models — OTEL Blog, 2024](https://opentelemetry.io/blog/llm-observability/)
+5. [Production Observability for AI Agents — Langfuse Blog, 2024](https://langfuse.com/blog/observability-llm-agents)

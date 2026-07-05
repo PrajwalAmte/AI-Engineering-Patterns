@@ -8,12 +8,12 @@ const PILLARS: Record<string, { label: string; color: string }> = {
   'data-patterns': { label: 'Data Patterns', color: '#fbbf24' },
   'reliability': { label: 'Reliability', color: '#f87171' },
   'retrieval-and-memory': { label: 'Retrieval & Memory', color: '#34d399' },
-  'observability': { label: 'Observability', color: '#a78bfa' },
+  'observability-and-evaluation': { label: 'Observability & Evaluation', color: '#a78bfa' },
   'security-and-trust': { label: 'Security & Trust', color: '#fb923c' },
   'cost-and-efficiency': { label: 'Cost & Efficiency', color: '#22d3ee' },
   'governance': { label: 'Governance', color: '#f472b6' },
   'graph-patterns': { label: 'Graph Patterns', color: '#2dd4bf' },
-  'evaluation-and-testing': { label: 'Evaluation & Testing', color: '#a3e635' },
+  'loop-engineering': { label: 'Loop Engineering', color: '#a3e635' },
 }
 
 interface PatternDef {
@@ -32,8 +32,8 @@ const PATTERNS: PatternDef[] = [
   { id: 'circuit-breaker', label: 'Circuit Breaker', pillar: 'reliability', path: 'reliability/circuit-breaker' },
   { id: 'hybrid-search', label: 'Hybrid Search', pillar: 'retrieval-and-memory', path: 'retrieval-and-memory/hybrid-search' },
   { id: 'freshness-watermark', label: 'Freshness Watermark', pillar: 'retrieval-and-memory', path: 'retrieval-and-memory/retrieval-freshness-watermark' },
-  { id: 'span-level-tracing', label: 'Span-Level Tracing', pillar: 'observability', path: 'observability/span-level-tracing' },
-  { id: 'embedding-drift', label: 'Embedding Drift', pillar: 'observability', path: 'observability/embedding-drift-detector' },
+  { id: 'span-level-tracing', label: 'Span-Level Tracing', pillar: 'observability-and-evaluation', path: 'observability-and-evaluation/span-level-tracing' },
+  { id: 'embedding-drift', label: 'Embedding Drift', pillar: 'observability-and-evaluation', path: 'observability-and-evaluation/embedding-drift-detector' },
   { id: 'input-sanitization', label: 'Input Sanitization', pillar: 'security-and-trust', path: 'security-and-trust/input-sanitization' },
   { id: 'tool-output-firewall', label: 'Tool Output Firewall', pillar: 'security-and-trust', path: 'security-and-trust/tool-output-firewall' },
   { id: 'token-budget', label: 'Token Budget', pillar: 'cost-and-efficiency', path: 'cost-and-efficiency/token-budget' },
@@ -43,7 +43,7 @@ const PATTERNS: PatternDef[] = [
   { id: 'graph-rag', label: 'GraphRAG', pillar: 'graph-patterns', path: 'graph-patterns/graph-rag' },
   { id: 'graph-of-thoughts', label: 'Graph of Thoughts', pillar: 'graph-patterns', path: 'graph-patterns/graph-of-thoughts' },
   { id: 'entity-resolution', label: 'Entity Resolution', pillar: 'graph-patterns', path: 'graph-patterns/entity-resolution-graph' },
-  { id: 'llm-as-judge', label: 'LLM-as-Judge', pillar: 'evaluation-and-testing', path: 'evaluation-and-testing/llm-as-judge' },
+  { id: 'llm-as-judge', label: 'LLM-as-Judge', pillar: 'observability-and-evaluation', path: 'observability-and-evaluation/llm-as-judge' },
 ]
 
 const LINKS: [string, string][] = [

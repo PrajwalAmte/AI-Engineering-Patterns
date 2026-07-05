@@ -39,7 +39,7 @@ description: "One-line description for SEO and pattern cards."
 ---
 ```
 
-Valid pillar slugs: `inference-and-serving`, `data-patterns`, `reliability`, `retrieval-and-memory`, `observability`, `security-and-trust`, `cost-and-efficiency`, `governance`, `graph-patterns`, `evaluation-and-testing`.
+Valid pillar slugs: `inference-and-serving`, `data-patterns`, `reliability`, `retrieval-and-memory`, `observability-and-evaluation`, `security-and-trust`, `cost-and-efficiency`, `governance`, `graph-patterns`, `loop-engineering`.
 
 Valid status values: `proposed`, `emerging`, `validated-in-production`.
 
