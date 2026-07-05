@@ -50,28 +50,28 @@ Without a structured framework, production multi-agent systems built on raw API 
 
 ```mermaid
 flowchart TD
-    U([User Input]) --> IG[Input\nGuardrails]
-    IG -- Tripwire\nTriggered --> ERR([Reject +\nError Response])
-    IG -- Pass --> A1[Agent\nInstructions + Tools]
-    A1 --> LOOP{Runner\nExecution Loop}
+    U([User Input]) --> IG[Input<br/>Guardrails]
+    IG -->|Tripwire<br/>Triggered| ERR([Reject +<br/>Error Response])
+    IG -->|Pass| A1[Agent<br/>Instructions + Tools]
+    A1 --> LOOP{Runner<br/>Execution Loop}
 
-    LOOP -- tool_use --> TC[Tool Execution\nor MCP Call]
-    TC --> TG[Tool\nGuardrails]
-    TG -- Pass --> LOOP
-    LOOP -- end_turn --> OG[Output\nGuardrails]
-    OG -- Pass --> OUT([Response to User])
+    LOOP -->|tool_use| TC[Tool Execution<br/>or MCP Call]
+    TC --> TG[Tool<br/>Guardrails]
+    TG -->|Pass| LOOP
+    LOOP -->|end_turn| OG[Output<br/>Guardrails]
+    OG -->|Pass| OUT([Response to User])
 
-    LOOP -- Handoff --> A2[Specialist Agent B]
-    A2 --> LOOP2{Agent B\nExecution Loop}
-    LOOP2 -- end_turn --> OUT
+    LOOP -->|Handoff| A2[Specialist Agent B]
+    A2 --> LOOP2{Agent B<br/>Execution Loop}
+    LOOP2 -->|end_turn| OUT
 
-    LOOP -- Agent as Tool --> A3[Specialist Agent C\nas Tool]
-    A3 --> A3R[Return result\nto Agent A]
+    LOOP -->|Agent as Tool| A3[Specialist Agent C<br/>as Tool]
+    A3 --> A3R[Return result<br/>to Agent A]
     A3R --> LOOP
 
     subgraph Session ["Session / Memory Layer"]
-        SH[Conversation\nHistory]
-        SC[Compaction\nTrigger]
+        SH[Conversation<br/>History]
+        SC[Compaction<br/>Trigger]
     end
 
     LOOP <--> Session

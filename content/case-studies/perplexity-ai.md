@@ -47,24 +47,28 @@ Without deliberate pattern application, a naive RAG-over-live-web pipeline fails
 
 <pre class="mermaid">
 flowchart LR
-    U([User Query]) --> SC{Semantic\nCache?}
-    SC -- Hit --> R([Cached Answer])
-    SC -- Miss --> MR{Model\nRouter}
+    U([User Query]) --> SC{Semantic<br/>Cache?}
+    SC -->|Hit| R([Cached Answer])
+    SC -->|Miss| MR{Model<br/>Router}
 
-    MR -- Quick mode --> SM[Small Model\nSonar-class]
-    MR -- Pro mode --> FM[Frontier Model\nGPT-4o / Claude]
+    MR -->|Quick mode| SM[Small Model<br/>Sonar-class]
+    MR -->|Pro mode| FM[Frontier Model<br/>GPT-4o / Claude]
 
     subgraph Retrieval ["Hybrid Retrieval (parallel)"]
-        BM25[BM25\nKeyword Index]
-        ANN[Dense ANN\nVector Index]
+        BM25[BM25<br/>Keyword Index]
+        ANN[Dense ANN<br/>Vector Index]
     end
 
-    SM & FM --> Retrieval
-    BM25 & ANN --> FU[RRF Fusion]
-    FU --> FW[Freshness\nWatermark Scorer]
-    FW --> TB[Token Budget\nAssembler]
-    TB --> SM & FM
-    SM & FM --> OUT([Streamed Answer\n+ Citations])
+    SM --> Retrieval
+    FM --> Retrieval
+    BM25 --> FU[RRF Fusion]
+    ANN --> FU
+    FU --> FW[Freshness<br/>Watermark Scorer]
+    FW --> TB[Token Budget<br/>Assembler]
+    TB --> SM
+    TB --> FM
+    SM --> OUT([Streamed Answer<br/>+ Citations])
+    FM --> OUT
     OUT --> SC
 </pre>
 

@@ -47,27 +47,33 @@ Without deliberate architecture choices, a naive multi-agent research pipeline f
 
 ```mermaid
 flowchart TD
-    U([User Query]) --> LR[LeadResearcher\nClaude Opus 4]
-    LR --> PL[Plan + Write\nto Memory Store]
-    PL --> ES{Effort\nScaler}
+    U([User Query]) --> LR[LeadResearcher<br/>Claude Opus 4]
+    LR --> PL[Plan + Write<br/>to Memory Store]
+    PL --> ES{Effort<br/>Scaler}
 
-    ES -- Simple\n1 agent / 3-10 calls --> SA1[Subagent 1\nSonnet 4]
-    ES -- Medium\n2-4 agents --> SA1 & SA2[Subagent 2\nSonnet 4]
-    ES -- Complex\n10+ agents --> SA1 & SA2 & SAN[Subagent N\nSonnet 4]
+    SA1[Subagent 1<br/>Sonnet 4]
+    SA2[Subagent 2<br/>Sonnet 4]
+    SAN[Subagent N<br/>Sonnet 4]
 
-    subgraph SubagentLoop ["Subagent Loop (each agent)"]
-        WT[Web Search /\nMCP Tool Call] --> IT[Interleaved\nThinking]
-        IT --> EV{Sufficient\nresult?}
-        EV -- No --> WT
-        EV -- Yes --> CR[Return\nCondensed Findings]
+    ES -->|Simple<br/>1 agent| SA1
+    ES -->|Medium<br/>2-4 agents| SA2
+    ES -->|Complex<br/>10+ agents| SAN
+
+    subgraph SubagentLoop ["Subagent Loop"]
+        WT[Web Search /<br/>MCP Tool Call] --> IT[Interleaved<br/>Thinking]
+        IT --> EV{Sufficient<br/>result?}
+        EV -->|No| WT
+        EV -->|Yes| CR[Return<br/>Condensed Findings]
     end
 
-    SA1 & SA2 & SAN --> SubagentLoop
+    SA1 --> SubagentLoop
+    SA2 --> SubagentLoop
+    SAN --> SubagentLoop
     CR --> LR
-    LR --> MORE{More research\nneeded?}
-    MORE -- Yes --> ES
-    MORE -- No --> CA[CitationAgent]
-    CA --> FIN([Final Answer\n+ Inline Citations])
+    LR --> MORE{More research<br/>needed?}
+    MORE -->|Yes| ES
+    MORE -->|No| CA[CitationAgent]
+    CA --> FIN([Final Answer<br/>+ Inline Citations])
 ```
 
 ## Architecture Walkthrough
