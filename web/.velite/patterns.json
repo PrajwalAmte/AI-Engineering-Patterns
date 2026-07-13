@@ -2467,6 +2467,211 @@
     ]
   },
   {
+    "title": "Request Hedging for LLMs",
+    "pillar": "reliability",
+    "status": "emerging",
+    "tags": [
+      "reliability",
+      "latency",
+      "tail-latency",
+      "redundancy",
+      "racing"
+    ],
+    "related": [
+      "Circuit Breaker for LLMs",
+      "Model Router",
+      "LLM Gateway"
+    ],
+    "description": "Send duplicate requests to multiple providers and return the fastest adequate response to mitigate tail latency.",
+    "contributors": [
+      "@PrajwalAmte"
+    ],
+    "last_updated": "2026-07",
+    "sidebar": {
+      "order": 3
+    },
+    "slug": "reliability/request-hedging",
+    "body": "<h2>What It Is</h2>\n<p>Request Hedging for LLMs sends identical inference requests to 2-3 providers simultaneously (or after a short delay), accepts the first response that meets quality criteria, and cancels the remaining in-flight requests. This technique, adapted from Google's \"Tail at Scale\" paper, reduces p99 latency at the cost of occasional duplicate inference charges. Unlike naive racing of all requests, hedging uses a delay threshold to avoid unnecessary duplication.</p>\n<h2>The Problem It Solves</h2>\n<p>LLM inference has high tail latency. P99 response times can be 5-10x slower than P50 due to:</p>\n<ul>\n<li>Backend batching and queueing on provider infrastructure</li>\n<li>Cold starts when scaling up capacity</li>\n<li>Spot instance interruptions or transient network issues</li>\n<li>Load imbalance across provider regions</li>\n</ul>\n<p>Traditional timeout strategies discard the work already performed by the slow request. Retrying after timeout doubles latency. Waiting for the slowest request degrades user experience in interactive applications where every second matters.</p>\n<p>Request hedging preserves the work from both requests: whichever completes first wins, and the loser is canceled. P99 latency approaches P50 of the faster provider, not P99 of the slower.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">sequenceDiagram\n    participant Client\n    participant Primary as Primary Provider\n    participant Backup as Backup Provider\n    \n    Client->>Primary: Request (t=0ms)\n    \n    Note over Client: Wait for hedge delay<br>(e.g., p95 latency threshold)\n    \n    alt Primary responds within delay\n        Primary-->>Client: Response (t=800ms)\n        Note over Client: Return primary response<br>No hedge needed\n    else Hedge delay exceeded\n        Client->>Backup: Hedged request (t=2000ms)\n        \n        alt Primary completes first\n            Primary-->>Client: Response (t=2500ms)\n            Client->>Backup: Cancel request\n            Note over Client: Return primary response\n        else Backup completes first\n            Backup-->>Client: Response (t=2300ms)\n            Client->>Primary: Cancel request\n            Note over Client: Return backup response\n        end\n    end\n</pre>\n<ol>\n<li><strong>Primary request</strong>: Send to preferred provider with best price/quality ratio</li>\n<li><strong>Delay threshold</strong>: Wait for delay period (e.g., provider's p95 latency, typically 2-3 seconds)</li>\n<li><strong>Hedge trigger</strong>: If primary hasn't responded by delay threshold, send identical request to backup provider</li>\n<li><strong>Race</strong>: Wait for first adequate response from either provider</li>\n<li><strong>Quality check</strong> (optional): Validate response meets minimum quality bar before accepting</li>\n<li><strong>Cancel losers</strong>: Immediately cancel the slower in-flight request to avoid paying for unused work</li>\n<li><strong>Metric collection</strong>: Track hedge rate, latency distribution, and cost overhead</li>\n</ol>\n<p>The delay threshold is critical: too short and most requests hedge unnecessarily (2x cost); too long and hedging doesn't help tail latency.</p>\n<h2>When to Use It</h2>\n<ul>\n<li>User-facing interactive applications with strict latency SLOs (e.g., chatbots, real-time assistants)</li>\n<li>P99 latency is a key product metric and current tail is unacceptable</li>\n<li>You have 2+ providers with similar quality and pricing</li>\n<li>Cost of occasional duplicate requests &#x3C; cost of SLO violations or user churn</li>\n<li>Providers support request cancellation or charge only for completed tokens</li>\n<li>Your application is read-only (no side effects like writes, tool calls that modify state)</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Batch processing or background tasks where latency is irrelevant</li>\n<li>Only one provider available (no backup to hedge to)</li>\n<li>Providers charge per-request submission regardless of cancellation</li>\n<li>Requests have side effects (database writes, API calls to external services)</li>\n<li>Your latency budget is loose (p99 &#x3C; 10s is acceptable)</li>\n<li>Cost optimization is the primary goal (hedging increases spend)</li>\n<li>Request rate is low enough that tail latency is statistically insignificant</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li>\n<p><strong>Cost overhead</strong> — 10-20% of requests exceed the hedge delay, triggering duplicate inference. If hedge rate is 15% and you pay for both requests, total cost increases by 15%. Some providers charge per-token-generated, so canceling early saves most of the cost.</p>\n</li>\n<li>\n<p><strong>Provider fairness</strong> — Backup provider receives mostly slow/problematic requests (those that exceeded the delay). This skewed traffic pattern may trigger rate limits or appear as abusive behavior. Rotate which provider is \"primary\" to balance load.</p>\n</li>\n<li>\n<p><strong>Cancellation reliability</strong> — Not all LLM providers support mid-stream request cancellation. If cancellation fails, you pay full price for both requests. OpenAI and Anthropic support cancellation via connection close; some proxy layers do not propagate cancellation.</p>\n</li>\n<li>\n<p><strong>Quality variance risk</strong> — First response may be fast but lower quality (hallucination, incomplete reasoning). Slower response may be better but gets canceled. Mitigation: add quality gate that rejects inadequate fast responses.</p>\n</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Hedge Thrashing</h3>\n<p><strong>Trigger</strong>: Delay threshold set too low (e.g., below p50 latency). Most requests exceed the delay and trigger hedging.<br>\n<strong>Symptom</strong>: Hedge rate climbs to 60-80%, nearly doubling inference costs with minimal latency improvement. Backup provider may rate-limit due to excessive traffic.<br>\n<strong>Mitigation</strong>: Calibrate delay threshold to provider's p90-p95 latency from historical data. Monitor hedge rate; target 10-20%. Use exponential moving average to adapt threshold dynamically as provider latency shifts.</p>\n<h3>Quality Divergence</h3>\n<p><strong>Trigger</strong>: Primary and backup providers use different models or configurations. Backup responds faster but with lower quality (hallucination, incomplete answer).<br>\n<strong>Symptom</strong>: Fast but wrong responses served to users. Quality metrics degrade while latency improves.<br>\n<strong>Mitigation</strong>: Add quality gate: validate response for structural correctness (JSON parsing, required fields), minimum length, or absence of refusal language before accepting. If fast response fails quality check, wait for slower response.</p>\n<h3>Cancellation Failure and Cost Explosion</h3>\n<p><strong>Trigger</strong>: Provider or proxy layer does not honor cancellation. Both requests run to completion and are billed.<br>\n<strong>Symptom</strong>: Cost doubles on all hedged requests (15-20% of traffic), increasing monthly spend by 15-20%. Difficult to detect without detailed per-request cost tracking.<br>\n<strong>Mitigation</strong>: Test cancellation behavior in staging before production rollout. Monitor per-request costs and flag anomalies. If cancellation is unreliable, reduce hedge rate by increasing delay threshold or disable hedging for that provider.</p>\n<h3>Quota Exhaustion on Backup</h3>\n<p><strong>Trigger</strong>: Primary provider degrades for extended period. Most requests hedge, flooding backup provider.<br>\n<strong>Symptom</strong>: Backup provider hits rate limits or quota caps. Both paths fail, leaving no working fallback.<br>\n<strong>Mitigation</strong>: Reserve backup provider quota for hedged traffic (e.g., 20% of primary capacity). Combine with circuit breaker pattern: if primary fails consistently, open circuit and route all traffic to backup without hedging.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">import asyncio\nimport time\nfrom typing import Callable, Optional, Any\nfrom dataclasses import dataclass\n\n@dataclass\nclass HedgedResponse:\n    content: str\n    provider: str\n    latency_ms: float\n    hedged: bool\n\nclass LLMProvider:\n    \"\"\"Minimal provider interface for hedging\"\"\"\n    \n    def __init__(self, name: str, api_call: Callable):\n        self.name = name\n        self.api_call = api_call\n    \n    async def complete(self, prompt: str, **kwargs) -> str:\n        \"\"\"Call provider API and return response text\"\"\"\n        return await self.api_call(prompt, **kwargs)\n\n\nasync def hedged_completion(\n    prompt: str,\n    primary: LLMProvider,\n    backup: LLMProvider,\n    hedge_delay_ms: int = 2000,\n    quality_check: Optional[Callable[[str], bool]] = None,\n    **model_kwargs\n) -> HedgedResponse:\n    \"\"\"\n    Send request to primary provider. If no response within hedge_delay_ms,\n    send to backup. Return first adequate response and cancel the other.\n    \n    Args:\n        prompt: Input prompt for the LLM\n        primary: Primary provider (best price/quality)\n        backup: Backup provider for hedging\n        hedge_delay_ms: Delay before sending hedge request (default: 2000ms)\n        quality_check: Optional function to validate response quality\n        **model_kwargs: Additional parameters passed to provider APIs\n    \n    Returns:\n        HedgedResponse with content, provider name, latency, and hedge flag\n    \"\"\"\n    \n    start_time = time.monotonic()\n    hedged = False\n    \n    # Start primary request\n    primary_task = asyncio.create_task(\n        primary.complete(prompt, **model_kwargs)\n    )\n    backup_task = None\n    \n    try:\n        # Wait up to hedge_delay for primary response\n        response = await asyncio.wait_for(\n            primary_task,\n            timeout=hedge_delay_ms / 1000.0\n        )\n        \n        # Check quality if validator provided\n        if quality_check is None or quality_check(response):\n            latency_ms = (time.monotonic() - start_time) * 1000\n            return HedgedResponse(\n                content=response,\n                provider=primary.name,\n                latency_ms=latency_ms,\n                hedged=False\n            )\n        \n        # Primary response failed quality check; will hedge below\n        \n    except asyncio.TimeoutError:\n        # Hedge delay exceeded without response; launch backup\n        hedged = True\n        backup_task = asyncio.create_task(\n            backup.complete(prompt, **model_kwargs)\n        )\n    \n    # Race remaining tasks\n    pending_tasks = {primary_task}\n    if backup_task:\n        pending_tasks.add(backup_task)\n    \n    done, pending = await asyncio.wait(\n        pending_tasks,\n        return_when=asyncio.FIRST_COMPLETED\n    )\n    \n    # Cancel slower request(s)\n    for task in pending:\n        task.cancel()\n        try:\n            await task\n        except asyncio.CancelledError:\n            pass\n    \n    # Extract result from winner\n    winner_task = done.pop()\n    response = winner_task.result()\n    \n    # Determine which provider won\n    provider_name = backup.name if winner_task == backup_task else primary.name\n    latency_ms = (time.monotonic() - start_time) * 1000\n    \n    return HedgedResponse(\n        content=response,\n        provider=provider_name,\n        latency_ms=latency_ms,\n        hedged=hedged\n    )\n\n\n# Example quality check function\ndef validate_json_response(response: str) -> bool:\n    \"\"\"Example: check if response is valid JSON with required fields\"\"\"\n    try:\n        import json\n        data = json.loads(response)\n        return \"answer\" in data  # Require specific field\n    except (json.JSONDecodeError, KeyError):\n        return False\n\n\n# Usage example\nasync def main():\n    # Define providers (simplified; real implementation calls actual APIs)\n    primary = LLMProvider(\"openai-gpt4o-mini\", api_call=lambda p, **kw: openai_api(p, **kw))\n    backup = LLMProvider(\"anthropic-claude-sonnet\", api_call=lambda p, **kw: anthropic_api(p, **kw))\n    \n    result = await hedged_completion(\n        prompt=\"Explain quantum entanglement in simple terms\",\n        primary=primary,\n        backup=backup,\n        hedge_delay_ms=2000,\n        temperature=0.7\n    )\n    \n    print(f\"Response from {result.provider} (latency: {result.latency_ms:.0f}ms, hedged: {result.hedged})\")\n    print(result.content)\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>LiteLLM</td><td>Open-source proxy</td><td>Supports fallback routing; does not natively implement hedging with racing</td></tr><tr><td>Portkey</td><td>Managed gateway</td><td>Automatic failover with latency-based routing; approximates hedging via fast timeout + fallback</td></tr><tr><td>Martian</td><td>LLM Gateway</td><td>Supports request hedging with configurable delay thresholds</td></tr><tr><td>Custom implementation</td><td>DIY</td><td>Necessary for fine-grained control over delay thresholds and cancellation logic</td></tr><tr><td>AWS Step Functions</td><td>Orchestration</td><td>Can implement hedging logic with parallel states and \"first to complete\" choice</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/static/circuit-breaker-129f41.md\">Circuit Breaker for LLMs</a></strong> — Circuit breaker handles sustained provider failures; hedging handles transient tail latency. Use both: circuit breaker to avoid sending hedges to a failing provider.</li>\n<li><strong><a href=\"/static/model-router-d20bbb.md\">Model Router</a></strong> — Router selects one provider based on static policy; hedging dynamically selects winner based on actual response time.</li>\n<li><strong><a href=\"/static/llm-gateway-6ec89d.md\">LLM Gateway</a></strong> — Gateway is the natural implementation point for hedging logic, centralizing latency monitoring and provider orchestration.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://research.google/pubs/pub40801/\">The Tail at Scale — Dean &#x26; Barroso (Google)</a> — Foundational paper introducing hedged requests and tail-tolerant techniques</li>\n<li><a href=\"https://www.microsoft.com/en-us/research/publication/hedged-requests/\">Hedged Requests: Stochastic Response Times — Microsoft Research</a> — Analysis of hedging in distributed systems</li>\n<li><a href=\"https://pragprog.com/titles/mnee2/release-it-second-edition/\">Release It! — Michael Nygard</a> — Chapter on latency and timeout patterns</li>\n<li><a href=\"https://dataintensive.net/\">Designing Data-Intensive Applications — Martin Kleppmann</a> — Section on tail latency amplification in multi-tier systems</li>\n</ul>",
+    "toc": [
+      {
+        "title": "What It Is",
+        "url": "#what-it-is",
+        "items": []
+      },
+      {
+        "title": "The Problem It Solves",
+        "url": "#the-problem-it-solves",
+        "items": []
+      },
+      {
+        "title": "How It Works",
+        "url": "#how-it-works",
+        "items": []
+      },
+      {
+        "title": "When to Use It",
+        "url": "#when-to-use-it",
+        "items": []
+      },
+      {
+        "title": "When NOT to Use It",
+        "url": "#when-not-to-use-it",
+        "items": []
+      },
+      {
+        "title": "Trade-offs",
+        "url": "#trade-offs",
+        "items": []
+      },
+      {
+        "title": "Failure Modes",
+        "url": "#failure-modes",
+        "items": [
+          {
+            "title": "Hedge Thrashing",
+            "url": "#hedge-thrashing",
+            "items": []
+          },
+          {
+            "title": "Quality Divergence",
+            "url": "#quality-divergence",
+            "items": []
+          },
+          {
+            "title": "Cancellation Failure and Cost Explosion",
+            "url": "#cancellation-failure-and-cost-explosion",
+            "items": []
+          },
+          {
+            "title": "Quota Exhaustion on Backup",
+            "url": "#quota-exhaustion-on-backup",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Implementation Example",
+        "url": "#implementation-example",
+        "items": []
+      },
+      {
+        "title": "Tool Landscape",
+        "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Related Patterns",
+        "url": "#related-patterns",
+        "items": []
+      },
+      {
+        "title": "Further Reading",
+        "url": "#further-reading",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "Uncertainty-Triggered Retry",
+    "pillar": "reliability",
+    "status": "emerging",
+    "tags": [
+      "reliability",
+      "retry",
+      "confidence",
+      "quality-assurance",
+      "hedge-detection"
+    ],
+    "related": [
+      "Circuit Breaker for LLMs",
+      "Model Router",
+      "LLM-as-Judge"
+    ],
+    "description": "Detect low-confidence LLM responses and retry with stronger models or improved prompts before serving degraded answers.",
+    "contributors": [
+      "@PrajwalAmte"
+    ],
+    "last_updated": "2026-07",
+    "sidebar": {
+      "order": 2
+    },
+    "slug": "reliability/uncertainty-triggered-retry",
+    "body": "<h2>What It Is</h2>\n<p>Uncertainty-Triggered Retry analyzes LLM responses for confidence signals before serving them to users. When a response exhibits uncertainty markers—low logprob scores, hedge phrases, incomplete structured outputs, or refusal-adjacent language—the system automatically retries the request with a stronger model, chain-of-thought prompting, or a rephrased prompt. Only confident responses are served; uncertain responses trigger remediation.</p>\n<h2>The Problem It Solves</h2>\n<p>LLM providers return HTTP 200 for low-confidence responses that should be treated as soft failures. Unlike hard errors (timeouts, rate limits), these degraded responses appear successful:</p>\n<ul>\n<li>Hedge language: \"I'm not entirely sure,\" \"This might be correct,\" \"Possibly...\"</li>\n<li>Low logprob scores indicating model uncertainty (when available)</li>\n<li>Incomplete structured outputs with missing required fields</li>\n<li>Refusal-adjacent responses: \"I cannot confidently say whether...\"</li>\n</ul>\n<p>Your system serves these degraded answers to users because the API succeeded. Users experience poor quality without triggering error handlers or alerts. Unlike circuit breakers that detect provider-level failures, this pattern detects response-level quality degradation.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[Send request to base model] --> B[Receive response]\n    B --> C{Analyze confidence signals}\n    C -->|High confidence| D[Return response]\n    C -->|Low confidence detected| E[Retry strategy]\n    E --> F[Upgrade to stronger model]\n    E --> G[Add chain-of-thought]\n    E --> H[Rephrase prompt]\n    F --> I[Send retry request]\n    G --> I\n    H --> I\n    I --> J[Receive retry response]\n    J --> K{Confidence improved?}\n    K -->|Yes| D\n    K -->|No| L[Surface uncertainty to user or escalate]\n</pre>\n<ol>\n<li><strong>Initial request</strong>: Send query to base model (e.g., GPT-4o-mini, Claude Sonnet)</li>\n<li><strong>Confidence analysis</strong>: Examine response for uncertainty signals:\n<ul>\n<li>Parse logprobs if available (scores below -1.5 indicate uncertainty)</li>\n<li>Detect hedge phrases with regex patterns</li>\n<li>Validate structured outputs for completeness</li>\n<li>Check for refusal-adjacent language</li>\n</ul>\n</li>\n<li><strong>Threshold check</strong>: Calculate aggregate uncertainty score (0.0-1.0)</li>\n<li><strong>Retry decision</strong>: If score exceeds threshold (e.g., 0.4), trigger retry:\n<ul>\n<li><strong>Model upgrade</strong>: Switch to stronger model (GPT-4, Claude Opus)</li>\n<li><strong>Prompt engineering</strong>: Add \"Think step-by-step before answering\"</li>\n<li><strong>Rephrasing</strong>: Make query more specific or constrained</li>\n</ul>\n</li>\n<li><strong>Cap retries</strong>: Limit to 1 retry to prevent cost explosion</li>\n<li><strong>Final disposition</strong>: Return retry result if improved, otherwise surface uncertainty explicitly</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>User-facing applications where low-quality answers damage trust</li>\n<li>Structured output tasks where completeness is critical (JSON, form filling)</li>\n<li>High-stakes domains (legal, medical, financial) requiring confident answers</li>\n<li>You have budget headroom for occasional retry costs (10-20% of requests)</li>\n<li>The base model is fast but occasionally low-confidence (smaller models, fine-tuned models)</li>\n<li>Logprobs or confidence signals are available from your provider</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Creative or subjective tasks where uncertainty is acceptable (brainstorming, poetry)</li>\n<li>High-throughput batch processing where latency and cost are paramount</li>\n<li>You're already using the strongest available model (no retry target)</li>\n<li>Budget is tightly constrained and cannot absorb 20-40% cost increase on uncertain queries</li>\n<li>Request volume is too low to justify the complexity (&#x3C; 100 requests/day)</li>\n<li>Tasks where hedge language is part of legitimate answers (\"The evidence suggests this may indicate...\")</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li>\n<p><strong>Cost amplification</strong> — If 20% of requests are uncertain, 20% of your inference budget doubles. With expensive models, this can be significant. A <span class=\"katex\"><span class=\"katex-mathml\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>0.10</mn><mi>b</mi><mi>a</mi><mi>s</mi><mi>e</mi><mi>r</mi><mi>e</mi><mi>q</mi><mi>u</mi><mi>e</mi><mi>s</mi><mi>t</mi><mi>b</mi><mi>e</mi><mi>c</mi><mi>o</mi><mi>m</mi><mi>e</mi><mi>s</mi></mrow><annotation encoding=\"application/x-tex\">0.10 base request becomes </annotation></semantics></math></span><span class=\"katex-html\" aria-hidden=\"true\"><span class=\"base\"><span class=\"strut\" style=\"height:0.8889em;vertical-align:-0.1944em;\"></span><span class=\"mord\">0.10</span><span class=\"mord mathnormal\">ba</span><span class=\"mord mathnormal\" style=\"margin-right:0.0278em;\">ser</span><span class=\"mord mathnormal\">e</span><span class=\"mord mathnormal\" style=\"margin-right:0.0359em;\">q</span><span class=\"mord mathnormal\">u</span><span class=\"mord mathnormal\">es</span><span class=\"mord mathnormal\">t</span><span class=\"mord mathnormal\">b</span><span class=\"mord mathnormal\">eco</span><span class=\"mord mathnormal\">m</span><span class=\"mord mathnormal\">es</span></span></span></span>0.40 if retried with GPT-4.</p>\n</li>\n<li>\n<p><strong>Latency penalty</strong> — Retry adds 1-3 seconds to uncertain requests. P99 latency increases proportionally to uncertainty rate. Users experience slower responses on edge cases.</p>\n</li>\n<li>\n<p><strong>Detection accuracy</strong> — Hedge phrase detection has false positives. Responses containing cautious but correct phrasing (\"This approach generally works well but may fail if...\") trigger unnecessary retries.</p>\n</li>\n<li>\n<p><strong>Confidence gaming</strong> — If the retry model learns your detection patterns, it may avoid hedge phrases even when genuinely uncertain, masking poor quality behind confident-sounding but wrong answers.</p>\n</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Retry Loop on Intractable Queries</h3>\n<p><strong>Trigger</strong>: Query is genuinely unanswerable with available context. Base model hedges, stronger model also hedges, triggering another retry.<br>\n<strong>Symptom</strong>: Cost explosion as system retries multiple times. Latency balloons to 5-10 seconds. User still receives uncertain answer.<br>\n<strong>Mitigation</strong>: Hard cap at 1 retry. If retry also fails confidence threshold, return explicit \"insufficient information\" response rather than uncertain answer. Track queries that fail twice for manual review.</p>\n<h3>False Positive on Cautious Reasoning</h3>\n<p><strong>Trigger</strong>: Model provides correct answer with appropriate epistemic humility (\"Based on the evidence, this likely indicates X, though other interpretations are possible\").<br>\n<strong>Symptom</strong>: Unnecessary retry wastes cost. Retry response may actually be worse (overconfident, less nuanced).<br>\n<strong>Mitigation</strong>: Use logprobs as primary signal when available; hedge phrases as secondary. Whitelist acceptable caution phrases in high-stakes domains. Manually review flagged responses to tune detection.</p>\n<h3>Uncertainty Signal Unavailability</h3>\n<p><strong>Trigger</strong>: Provider does not expose logprobs (e.g., Azure OpenAI, some Claude configurations). Only hedge phrase detection available.<br>\n<strong>Symptom</strong>: Detection relies solely on text analysis, which is less reliable. False negative rate increases.<br>\n<strong>Mitigation</strong>: Negotiate API access with logprobs if possible. Alternatively, train a lightweight confidence classifier on labeled data (confident vs. uncertain responses). Use embedding-based similarity to known-uncertain patterns.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">import re\nfrom typing import Optional, Callable\nfrom dataclasses import dataclass\n\n@dataclass\nclass LLMResponse:\n    text: str\n    logprobs: Optional[list[float]] = None\n    metadata: dict = None\n\n# Hedge phrase patterns compiled for efficiency\nHEDGE_PATTERNS = [\n    re.compile(r\"\\b(might|maybe|possibly|perhaps|could be)\\b\", re.IGNORECASE),\n    re.compile(r\"\\b(I think|not sure|unclear|uncertain|difficult to say)\\b\", re.IGNORECASE),\n    re.compile(r\"\\b(I'm not certain|cannot confidently|may or may not)\\b\", re.IGNORECASE),\n]\n\ndef calculate_uncertainty(response: LLMResponse) -> float:\n    \"\"\"\n    Return uncertainty score 0.0 (certain) to 1.0 (very uncertain).\n    Combines logprobs and hedge phrase detection.\n    \"\"\"\n    score = 0.0\n    \n    # Check hedge language (weight: 0.3 per match, cap at 0.6)\n    hedge_matches = sum(1 for pattern in HEDGE_PATTERNS if pattern.search(response.text))\n    score += min(hedge_matches * 0.3, 0.6)\n    \n    # Check logprobs if available (weight: up to 0.5)\n    if response.logprobs and len(response.logprobs) > 0:\n        avg_logprob = sum(response.logprobs) / len(response.logprobs)\n        # Logprobs below -1.5 indicate uncertainty; map to 0-0.5 score\n        if avg_logprob &#x3C; -1.5:\n            score += min((abs(avg_logprob) - 1.5) * 0.2, 0.5)\n    \n    return min(score, 1.0)\n\n\nasync def llm_call(\n    model: str,\n    prompt: str,\n    system: Optional[str] = None,\n    temperature: float = 0.7,\n    logprobs: bool = False\n) -> LLMResponse:\n    \"\"\"Placeholder for actual LLM API call\"\"\"\n    # Implementation depends on your provider (OpenAI, Anthropic, etc.)\n    pass\n\n\nasync def retry_on_uncertainty(\n    prompt: str,\n    base_model: str = \"gpt-4o-mini\",\n    stronger_model: str = \"gpt-4\",\n    system_prompt: Optional[str] = None,\n    uncertainty_threshold: float = 0.4,\n    temperature: float = 0.7,\n) -> LLMResponse:\n    \"\"\"\n    Send request to base model. If response is uncertain, retry with stronger model.\n    Returns the best available response.\n    \"\"\"\n    \n    # First attempt with base model\n    response = await llm_call(\n        model=base_model,\n        prompt=prompt,\n        system=system_prompt,\n        temperature=temperature,\n        logprobs=True  # Request logprobs if available\n    )\n    \n    uncertainty = calculate_uncertainty(response)\n    \n    # If confident enough, return immediately\n    if uncertainty &#x3C; uncertainty_threshold:\n        response.metadata = {\"uncertainty\": uncertainty, \"retried\": False}\n        return response\n    \n    # Retry with stronger model and chain-of-thought\n    cot_prompt = f\"{prompt}\\n\\nThink step-by-step and explain your reasoning before providing a final answer.\"\n    \n    retry_response = await llm_call(\n        model=stronger_model,\n        prompt=cot_prompt,\n        system=system_prompt,\n        temperature=temperature * 0.8,  # Slightly lower temperature for retry\n        logprobs=True\n    )\n    \n    retry_uncertainty = calculate_uncertainty(retry_response)\n    retry_response.metadata = {\n        \"uncertainty\": retry_uncertainty,\n        \"retried\": True,\n        \"original_uncertainty\": uncertainty\n    }\n    \n    return retry_response\n\n\n# Usage example\nasync def main():\n    response = await retry_on_uncertainty(\n        prompt=\"What is the capital of France?\",\n        system_prompt=\"You are a helpful assistant. Be direct and confident when you know the answer.\",\n        uncertainty_threshold=0.4\n    )\n    \n    if response.metadata.get(\"uncertainty\", 0) > 0.6:\n        print(f\"Warning: High uncertainty ({response.metadata['uncertainty']:.2f})\")\n        print(\"Consider human review or returning 'insufficient information' response\")\n    \n    print(response.text)\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>OpenAI API</td><td>Provider</td><td>Supports logprobs parameter for confidence signals; use <code>logprobs=true</code></td></tr><tr><td>Anthropic Claude</td><td>Provider</td><td>Does not expose logprobs; must rely on text-based detection</td></tr><tr><td>LiteLLM</td><td>Open-source proxy</td><td>Provides normalized logprobs across providers where available</td></tr><tr><td>LangChith</td><td>Observability</td><td>Can log uncertainty scores and retry rates for analysis</td></tr><tr><td>Guardrails AI</td><td>Validation</td><td>Supports custom validators for confidence checking</td></tr><tr><td>Custom classifier</td><td>DIY</td><td>Fine-tune small model (DistilBERT, small LLama) to detect uncertainty from response text</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/static/circuit-breaker-129f41.md\">Circuit Breaker for LLMs</a></strong> — Circuit breaker detects provider-level failures; uncertainty retry detects response-level quality issues. Use both: circuit breaker for hard failures, uncertainty retry for soft degradation.</li>\n<li><strong>Model Router</strong> — Route uncertain responses to stronger models without full retry; requires router to accept \"uncertainty score\" as routing signal.</li>\n<li><strong>LLM-as-Judge</strong> — Use a separate judge model to score response quality instead of rule-based uncertainty detection; more accurate but adds latency and cost.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2205.14334\">Teaching Models to Express Their Uncertainty in Words</a> — Research on eliciting calibrated confidence from LLMs</li>\n<li><a href=\"https://arxiv.org/abs/2302.09664\">Semantic Uncertainty: Linguistic Invariances for Uncertainty Estimation in Natural Language Generation</a> — Academic approach to quantifying LLM uncertainty</li>\n<li><a href=\"https://platform.openai.com/docs/api-reference/chat/create#chat-create-logprobs\">OpenAI Logprobs Documentation</a> — Technical reference for extracting confidence signals</li>\n<li><a href=\"https://brianchristian.org/the-alignment-problem/\">The Alignment Problem — Brian Christian</a> — Chapter on uncertainty and calibration in ML systems</li>\n</ul>",
+    "toc": [
+      {
+        "title": "What It Is",
+        "url": "#what-it-is",
+        "items": []
+      },
+      {
+        "title": "The Problem It Solves",
+        "url": "#the-problem-it-solves",
+        "items": []
+      },
+      {
+        "title": "How It Works",
+        "url": "#how-it-works",
+        "items": []
+      },
+      {
+        "title": "When to Use It",
+        "url": "#when-to-use-it",
+        "items": []
+      },
+      {
+        "title": "When NOT to Use It",
+        "url": "#when-not-to-use-it",
+        "items": []
+      },
+      {
+        "title": "Trade-offs",
+        "url": "#trade-offs",
+        "items": []
+      },
+      {
+        "title": "Failure Modes",
+        "url": "#failure-modes",
+        "items": [
+          {
+            "title": "Retry Loop on Intractable Queries",
+            "url": "#retry-loop-on-intractable-queries",
+            "items": []
+          },
+          {
+            "title": "False Positive on Cautious Reasoning",
+            "url": "#false-positive-on-cautious-reasoning",
+            "items": []
+          },
+          {
+            "title": "Uncertainty Signal Unavailability",
+            "url": "#uncertainty-signal-unavailability",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Implementation Example",
+        "url": "#implementation-example",
+        "items": []
+      },
+      {
+        "title": "Tool Landscape",
+        "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Related Patterns",
+        "url": "#related-patterns",
+        "items": []
+      },
+      {
+        "title": "Further Reading",
+        "url": "#further-reading",
+        "items": []
+      }
+    ]
+  },
+  {
     "title": "Hybrid Search",
     "pillar": "retrieval-and-memory",
     "status": "validated-in-production",
@@ -2642,6 +2847,227 @@
           {
             "title": "Decay Function Cliff",
             "url": "#decay-function-cliff",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Implementation Example",
+        "url": "#implementation-example",
+        "items": []
+      },
+      {
+        "title": "Tool Landscape",
+        "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Related Patterns",
+        "url": "#related-patterns",
+        "items": []
+      },
+      {
+        "title": "Further Reading",
+        "url": "#further-reading",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "Retrieval Quality Gate",
+    "pillar": "retrieval-and-memory",
+    "status": "validated-in-production",
+    "tags": [
+      "retrieval",
+      "rag",
+      "quality-control",
+      "relevance",
+      "filtering"
+    ],
+    "related": [
+      "Hybrid Search",
+      "Context Compaction",
+      "Token Budget"
+    ],
+    "description": "Filter retrieved chunks by relevance before injecting into context to prevent hallucinations grounded in irrelevant content.",
+    "contributors": [
+      "@PrajwalAmte"
+    ],
+    "last_updated": "2026-07",
+    "sidebar": {
+      "order": 3
+    },
+    "slug": "retrieval-and-memory/retrieval-quality-gate",
+    "body": "<h2>What It Is</h2>\n<p>Retrieval Quality Gate adds a binary relevance classifier between retrieval and context assembly in RAG systems. After retrieving top-k chunks by embedding similarity, each chunk is scored for actual relevance to the query. Only chunks exceeding a relevance threshold are passed to the LLM context. Low-relevance chunks—even if they have high embedding similarity—are discarded, reducing context pollution and hallucinations grounded in tangential content.</p>\n<h2>The Problem It Solves</h2>\n<p>Standard RAG systems retrieve by embedding similarity and blindly inject all top-k chunks into context. This fails when:</p>\n<ul>\n<li><strong>Ambiguous queries</strong>: User asks \"What is Python's memory model?\" System retrieves chunks about Python the snake, Python the programming language, and Python web frameworks—all have high embedding similarity to \"Python.\"</li>\n<li><strong>Noisy corpora</strong>: Documentation wikis, logs, and heterogeneous knowledge bases contain semantically similar but off-topic content.</li>\n<li><strong>Outdated content</strong>: Deprecated documentation has high similarity to current queries but provides incorrect guidance.</li>\n<li><strong>Tangential matches</strong>: A chunk mentions the query keywords but doesn't help answer the question.</li>\n</ul>\n<p>The result: LLMs hallucinate answers grounded in irrelevant retrieved chunks, waste token budget on noise, and produce confused responses when contradictory content enters context. Embedding similarity measures vector distance, not relevance to the information need.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[User query] --> B[Vector search: retrieve top-k chunks]\n    B --> C[Relevance classifier scores each chunk]\n    C --> D{Score > threshold?}\n    D -->|Yes| E[Pass to LLM context]\n    D -->|No| F[Discard chunk]\n    E --> G[Assemble filtered context]\n    F --> G\n    G --> H{Enough chunks passed?}\n    H -->|Yes| I[Generate answer with filtered context]\n    H -->|No| J[Fallback: keyword search or 'insufficient context']\n    I --> K[Return answer]\n    J --> K\n</pre>\n<ol>\n<li><strong>Retrieval</strong>: Perform standard vector search or hybrid search, retrieving top-k chunks (k=10-20, larger than final context window allows)</li>\n<li><strong>Relevance scoring</strong>: For each retrieved chunk, score relevance to the query:\n<ul>\n<li><strong>Cross-encoder model</strong>: Pass (query, chunk) pair to model trained for relevance (e.g., MS MARCO cross-encoder)</li>\n<li><strong>LLM-as-judge</strong>: Ask small LLM \"Is this chunk relevant to answering the query?\" (binary classification)</li>\n<li><strong>Gradient-boosted classifier</strong>: Train on (embedding_features, relevance_label) pairs from labeled data</li>\n</ul>\n</li>\n<li><strong>Threshold filtering</strong>: Keep only chunks with score > threshold (e.g., 0.6 on 0-1 scale)</li>\n<li><strong>Fallback handling</strong>: If too few chunks pass (e.g., &#x3C; 2), fall back to keyword search, expand query, or return \"insufficient information\" response</li>\n<li><strong>Context assembly</strong>: Inject filtered chunks into LLM context in relevance-score order (highest first)</li>\n</ol>\n<p>The classifier must be fast (&#x3C;100ms for all k chunks) and cheap to avoid negating RAG's benefits.</p>\n<h2>When to Use It</h2>\n<ul>\n<li>Open-domain question answering where queries are ambiguous</li>\n<li>Large, heterogeneous corpora (internal wikis, mixed documentation, logs)</li>\n<li>You observe hallucinations citing retrieved-but-irrelevant chunks in LLM outputs</li>\n<li>Context window budget is tight (4k-8k tokens) and wasted tokens hurt quality</li>\n<li>You have labeled relevance data or can generate it with LLM-as-judge</li>\n<li>Retrieval precision is low (many false positives in top-k)</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Small, curated corpora where retrieval precision is already >90%</li>\n<li>Latency budget cannot afford 50-200ms gating overhead</li>\n<li>You have no labeled data and cannot generate relevance judgments</li>\n<li>Embedding retrieval already achieves high precision (validated on test set)</li>\n<li>Queries are unambiguous and corpus is homogeneous (single product documentation)</li>\n<li>You're retrieving only k=1-3 chunks (gating overhead not justified)</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li>\n<p><strong>Latency overhead</strong> — Relevance scoring adds 50-200ms depending on classifier complexity. Cross-encoders are accurate but slower (100-200ms for 10 chunks). Small LLMs are faster (~50ms) but less accurate. Cached embeddings + gradient-boosted trees are fastest (~10ms) but require training data.</p>\n</li>\n<li>\n<p><strong>False negatives</strong> — Chunks relevant to the query but phrased differently may be scored as irrelevant and discarded. Increases \"no answer found\" rate by 5-15% in practice. Requires threshold tuning and periodic review of discarded chunks.</p>\n</li>\n<li>\n<p><strong>Classifier maintenance</strong> — Cross-encoders require periodic retraining as corpus evolves. LLM-as-judge costs per-query. Gradient-boosted classifiers need labeled data and feature engineering. Adds operational complexity.</p>\n</li>\n<li>\n<p><strong>Threshold calibration</strong> — Too strict (>0.8) and most chunks are discarded; too loose (&#x3C;0.4) and gating provides no benefit. Requires validation on labeled test set with precision/recall analysis.</p>\n</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Overfitting to Query Phrasing</h3>\n<p><strong>Trigger</strong>: Relevance classifier trained on queries with specific vocabulary. User queries use synonyms or domain jargon not in training data.<br>\n<strong>Symptom</strong>: Classifier rejects chunks using \"purchase\" when query uses \"buy,\" even though semantically equivalent. False negative rate spikes on out-of-vocabulary queries.<br>\n<strong>Mitigation</strong>: Train classifier on paraphrased query variants. Use data augmentation (back-translation, synonym replacement). Monitor false negative rate by query type and retrain with new examples.</p>\n<h3>Threshold Miscalibration Across Topics</h3>\n<p><strong>Trigger</strong>: Threshold tuned on FAQ-style queries (high relevance expected). Applied to exploratory queries where partial relevance is useful.<br>\n<strong>Symptom</strong>: Exploratory queries return \"insufficient context\" because no chunk scores above threshold. Users receive no answer for valid but broad questions.<br>\n<strong>Mitigation</strong>: Use query-adaptive thresholds: lower threshold for broad queries (detected by query length, question type). Track \"no answer\" rate by query category. Allow user to request \"show me everything related\" mode with lower threshold.</p>\n<h3>Classifier Brittleness to Corpus Drift</h3>\n<p><strong>Trigger</strong>: Corpus adds new content types (API references after training on tutorials). Classifier trained on old content distribution.<br>\n<strong>Symptom</strong>: New content scored as irrelevant despite being highly relevant. Retrieval quality degrades after corpus update.<br>\n<strong>Mitigation</strong>: Retrain classifier quarterly or after major corpus updates. Use online learning or active learning to continuously update classifier. Monitor relevance scores over time and flag distribution shifts.</p>\n<h3>Expensive Gating on High-Traffic Systems</h3>\n<p><strong>Trigger</strong>: System handles 1000 QPS. Each query retrieves k=20 chunks. Classifier must score 20,000 chunk pairs per second.<br>\n<strong>Symptom</strong>: Gating becomes bottleneck. Latency p99 increases from 500ms to 1500ms. GPU costs for cross-encoder exceed LLM inference costs.<br>\n<strong>Mitigation</strong>: Use caching: store relevance scores for (query_embedding, chunk_id) pairs. Use approximate caching with LSH for similar queries. Batch classifier inference across concurrent requests. Switch to faster classifier (gradient-boosted trees on precomputed features).</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from sentence_transformers import CrossEncoder\nfrom typing import List, Dict, Optional\nfrom dataclasses import dataclass\n\n@dataclass\nclass Chunk:\n    text: str\n    chunk_id: str\n    metadata: Dict\n    similarity_score: float = 0.0\n    relevance_score: float = 0.0\n\nclass RetrievalQualityGate:\n    \"\"\"\n    Filters retrieved chunks by relevance before adding to LLM context.\n    Uses cross-encoder model for accurate relevance scoring.\n    \"\"\"\n    \n    def __init__(\n        self,\n        model_name: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2',\n        relevance_threshold: float = 0.5,\n        min_chunks: int = 2,\n        max_chunks: int = 5\n    ):\n        \"\"\"\n        Args:\n            model_name: HuggingFace cross-encoder model for relevance scoring\n            relevance_threshold: Minimum score (0-1) to pass gate\n            min_chunks: Minimum chunks to return (triggers fallback if fewer)\n            max_chunks: Maximum chunks to include in context\n        \"\"\"\n        self.model = CrossEncoder(model_name)\n        self.threshold = relevance_threshold\n        self.min_chunks = min_chunks\n        self.max_chunks = max_chunks\n    \n    def score_relevance(self, query: str, chunks: List[Chunk]) -> List[Chunk]:\n        \"\"\"\n        Score relevance of each chunk to the query.\n        Returns chunks with relevance_score populated.\n        \"\"\"\n        # Prepare (query, chunk) pairs for cross-encoder\n        pairs = [(query, chunk.text) for chunk in chunks]\n        \n        # Batch scoring for efficiency\n        scores = self.model.predict(pairs)\n        \n        # Attach scores to chunks\n        for chunk, score in zip(chunks, scores):\n            chunk.relevance_score = float(score)\n        \n        return chunks\n    \n    def filter_chunks(\n        self, \n        query: str, \n        chunks: List[Chunk]\n    ) -> tuple[List[Chunk], Dict]:\n        \"\"\"\n        Filter chunks by relevance threshold.\n        \n        Returns:\n            (filtered_chunks, metadata) tuple where metadata contains\n            filtering stats for observability\n        \"\"\"\n        # Score all chunks\n        scored_chunks = self.score_relevance(query, chunks)\n        \n        # Filter by threshold\n        passing = [\n            c for c in scored_chunks \n            if c.relevance_score >= self.threshold\n        ]\n        \n        # Sort by relevance (highest first)\n        passing.sort(key=lambda c: c.relevance_score, reverse=True)\n        \n        # Check if we have enough chunks\n        if len(passing) &#x3C; self.min_chunks:\n            # Fallback: return top min_chunks by relevance score\n            fallback = sorted(\n                scored_chunks, \n                key=lambda c: c.relevance_score, \n                reverse=True\n            )[:self.min_chunks]\n            \n            metadata = {\n                \"filtered\": True,\n                \"chunks_retrieved\": len(chunks),\n                \"chunks_passed\": len(passing),\n                \"chunks_returned\": len(fallback),\n                \"fallback_triggered\": True,\n                \"avg_relevance\": sum(c.relevance_score for c in fallback) / len(fallback)\n            }\n            \n            return fallback, metadata\n        \n        # Limit to max_chunks\n        final = passing[:self.max_chunks]\n        \n        metadata = {\n            \"filtered\": True,\n            \"chunks_retrieved\": len(chunks),\n            \"chunks_passed\": len(passing),\n            \"chunks_returned\": len(final),\n            \"fallback_triggered\": False,\n            \"avg_relevance\": sum(c.relevance_score for c in final) / len(final),\n            \"min_relevance\": min(c.relevance_score for c in final),\n            \"max_relevance\": max(c.relevance_score for c in final)\n        }\n        \n        return final, metadata\n\n\n# Usage example\ndef rag_with_quality_gate(query: str, vector_db) -> str:\n    \"\"\"\n    RAG pipeline with relevance-based filtering.\n    \"\"\"\n    # 1. Retrieve top-k chunks (k larger than final context needs)\n    retrieved_chunks = vector_db.similarity_search(\n        query=query,\n        k=15  # Retrieve more than we need\n    )\n    \n    # Convert to Chunk objects\n    chunks = [\n        Chunk(\n            text=doc.page_content,\n            chunk_id=doc.metadata.get('id'),\n            metadata=doc.metadata,\n            similarity_score=doc.metadata.get('score', 0.0)\n        )\n        for doc in retrieved_chunks\n    ]\n    \n    # 2. Filter by relevance\n    gate = RetrievalQualityGate(\n        relevance_threshold=0.6,\n        min_chunks=2,\n        max_chunks=5\n    )\n    \n    filtered_chunks, filter_metadata = gate.filter_chunks(query, chunks)\n    \n    # 3. Check if we have sufficient context\n    if filter_metadata['fallback_triggered'] and filter_metadata['avg_relevance'] &#x3C; 0.4:\n        return \"I don't have enough relevant information to answer this question confidently.\"\n    \n    # 4. Assemble context from filtered chunks\n    context = \"\\n\\n\".join([\n        f\"[Source {i+1}]: {chunk.text}\"\n        for i, chunk in enumerate(filtered_chunks)\n    ])\n    \n    # 5. Generate answer with filtered context\n    prompt = f\"\"\"Answer the question based only on the following context:\n\n{context}\n\nQuestion: {query}\n\nAnswer:\"\"\"\n    \n    answer = llm_call(prompt)\n    \n    # Log filtering stats for observability\n    print(f\"Retrieved: {filter_metadata['chunks_retrieved']}, \"\n          f\"Passed: {filter_metadata['chunks_passed']}, \"\n          f\"Used: {filter_metadata['chunks_returned']}, \"\n          f\"Avg relevance: {filter_metadata['avg_relevance']:.2f}\")\n    \n    return answer\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>sentence-transformers</td><td>Open-source library</td><td>Cross-encoder models for relevance scoring; MS MARCO models work well out-of-box</td></tr><tr><td>LlamaIndex</td><td>RAG framework</td><td>Supports custom node postprocessors for filtering; can integrate cross-encoders</td></tr><tr><td>LangChain</td><td>RAG framework</td><td>Contextual compression retrievers support relevance filtering with custom scorers</td></tr><tr><td>Cohere Rerank</td><td>Managed API</td><td>Production-grade reranking API; charges per-chunk scored</td></tr><tr><td>Jina Reranker</td><td>Managed API</td><td>Cross-encoder API optimized for low latency; 50ms p99 for 10 chunks</td></tr><tr><td>Elasticsearch</td><td>Search engine</td><td>Supports rescoring with custom models; can implement gating in rescore phase</td></tr><tr><td>Custom classifier</td><td>DIY</td><td>Gradient-boosted trees on embedding features; lowest latency, requires training data</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/static/hybrid-search-9b02b1.md\">Hybrid Search</a></strong> — Hybrid search improves initial retrieval precision; quality gate further filters the hybrid results before context assembly.</li>\n<li><strong><a href=\"/static/context-compaction-293df4.md\">Context Compaction</a></strong> — Context compaction summarizes chunks to fit budget; quality gate filters chunks before compaction to avoid summarizing irrelevant content.</li>\n<li><strong><a href=\"/static/token-budget-3971b5.md\">Token Budget</a></strong> — Token budget limits total context size; quality gate ensures budget is spent on high-relevance chunks only.</li>\n<li><strong><a href=\"/static/semantic-caching-c38901.md\">Semantic Caching</a></strong> — Cache quality-gated contexts keyed by (query, filtered_chunk_ids) to amortize gating cost.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2212.10496\">Precise Zero-Shot Dense Retrieval without Relevance Labels</a> — Research on query-document relevance without fine-tuning</li>\n<li><a href=\"https://arxiv.org/abs/1611.09268\">MS MARCO: A Human Generated MAchine Reading COmprehension Dataset</a> — Dataset used to train many cross-encoder models</li>\n<li><a href=\"https://www.sbert.net/examples/applications/cross-encoder/README.html\">Cross-Encoders for Semantic Search — Sentence-Transformers Docs</a> — Practical guide to cross-encoder relevance models</li>\n<li><a href=\"https://www.anthropic.com/research\">When Not to Trust Your RAG System — Anthropic</a> — Analysis of RAG failure modes including irrelevant retrieval</li>\n</ul>",
+    "toc": [
+      {
+        "title": "What It Is",
+        "url": "#what-it-is",
+        "items": []
+      },
+      {
+        "title": "The Problem It Solves",
+        "url": "#the-problem-it-solves",
+        "items": []
+      },
+      {
+        "title": "How It Works",
+        "url": "#how-it-works",
+        "items": []
+      },
+      {
+        "title": "When to Use It",
+        "url": "#when-to-use-it",
+        "items": []
+      },
+      {
+        "title": "When NOT to Use It",
+        "url": "#when-not-to-use-it",
+        "items": []
+      },
+      {
+        "title": "Trade-offs",
+        "url": "#trade-offs",
+        "items": []
+      },
+      {
+        "title": "Failure Modes",
+        "url": "#failure-modes",
+        "items": [
+          {
+            "title": "Overfitting to Query Phrasing",
+            "url": "#overfitting-to-query-phrasing",
+            "items": []
+          },
+          {
+            "title": "Threshold Miscalibration Across Topics",
+            "url": "#threshold-miscalibration-across-topics",
+            "items": []
+          },
+          {
+            "title": "Classifier Brittleness to Corpus Drift",
+            "url": "#classifier-brittleness-to-corpus-drift",
+            "items": []
+          },
+          {
+            "title": "Expensive Gating on High-Traffic Systems",
+            "url": "#expensive-gating-on-high-traffic-systems",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Implementation Example",
+        "url": "#implementation-example",
+        "items": []
+      },
+      {
+        "title": "Tool Landscape",
+        "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Related Patterns",
+        "url": "#related-patterns",
+        "items": []
+      },
+      {
+        "title": "Further Reading",
+        "url": "#further-reading",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "Sliding Context Window with Memory Consolidation",
+    "pillar": "retrieval-and-memory",
+    "status": "emerging",
+    "tags": [
+      "memory",
+      "conversation",
+      "context-management",
+      "summarization",
+      "compression"
+    ],
+    "related": [
+      "Context Compaction",
+      "Cascading Context Assembly",
+      "Token Budget"
+    ],
+    "description": "Maintain long conversations by keeping recent turns verbatim and consolidating old turns into factual summaries to prevent context overflow.",
+    "contributors": [
+      "@PrajwalAmte"
+    ],
+    "last_updated": "2026-07",
+    "sidebar": {
+      "order": 4
+    },
+    "slug": "retrieval-and-memory/sliding-context-window",
+    "body": "<h2>What It Is</h2>\n<p>Sliding Context Window with Memory Consolidation divides conversation history into zones: an immutable system prompt, a sliding window of recent turns kept verbatim, and a consolidated archive of old turns compressed into factual summaries. As new turns arrive, the oldest verbatim turns are moved to the archive and consolidated, preserving critical facts while maintaining recent conversational coherence. This asymmetric compression strategy prevents context overflow in long conversations without losing essential historical context.</p>\n<h2>The Problem It Solves</h2>\n<p>In long multi-turn conversations (customer support, tutoring, therapy, sales), context windows fill up quickly. Common failure patterns:</p>\n<ul>\n<li><strong>Naive truncation</strong>: Drop oldest turns when context is full. Critical earlier information (user preferences, constraints, decisions made) is lost. Model forgets what was already discussed.</li>\n<li><strong>Naive full summarization</strong>: Compress entire history into a summary. Loses fine-grained recent context needed for coherent responses (\"as I mentioned earlier...\" references fail).</li>\n<li><strong>No compression</strong>: Keep all turns verbatim until context overflows, then crash or silently truncate. Users experience sudden amnesia mid-conversation.</li>\n</ul>\n<p>The challenge: recent turns need verbatim preservation for conversational coherence, while old turns need compression to save space. A single strategy for all history doesn't work—you need asymmetric treatment based on recency.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[New user turn arrives] --> B[Add to verbatim window]\n    B --> C{Verbatim window size > threshold?}\n    C -->|No| D[Continue conversation]\n    C -->|Yes| E[Extract oldest N turns from verbatim]\n    E --> F[Consolidate: extract facts, decisions, constraints]\n    F --> G[Append summary to consolidated archive]\n    G --> H[Remove consolidated turns from verbatim]\n    H --> D\n    D --> I[Assemble context for LLM]\n    I --> J[Immutable prompt + Archive + Verbatim window]\n    J --> K[Generate response]\n</pre>\n<h3>Context Zones</h3>\n<ol>\n<li>\n<p><strong>Immutable zone</strong> (always present):</p>\n<ul>\n<li>System prompt defining assistant behavior</li>\n<li>User profile (name, preferences, verified facts)</li>\n<li>Session metadata (language, timezone, special needs)</li>\n</ul>\n</li>\n<li>\n<p><strong>Verbatim window</strong> (last N turns, default N=10):</p>\n<ul>\n<li>Recent conversation kept word-for-word</li>\n<li>Maintains coherence, allows \"as you said\" references</li>\n<li>Size: typically 8-12 turns or 2000-4000 tokens</li>\n</ul>\n</li>\n<li>\n<p><strong>Consolidated archive</strong> (compressed old turns):</p>\n<ul>\n<li>Factual summaries of earlier conversation</li>\n<li>Preserves: decisions made, constraints stated, facts learned</li>\n<li>Drops: chitchat, redundancy, verbosity</li>\n<li>Format: bullet-point facts or chronological summary</li>\n</ul>\n</li>\n</ol>\n<h3>Consolidation Process</h3>\n<p>When verbatim window exceeds threshold (e.g., 12 turns):</p>\n<ol>\n<li>Extract oldest 5 turns from verbatim window</li>\n<li>Send to consolidation LLM with prompt:\n<pre><code>Extract key facts, decisions, and constraints from this conversation fragment.\nPreserve information needed to maintain continuity (user preferences, agreed plans, important details).\nDrop small talk and redundant content.\n</code></pre>\n</li>\n<li>Append resulting summary to consolidated archive</li>\n<li>Remove the 5 turns from verbatim window</li>\n<li>Continue conversation with new context structure</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>Conversations regularly exceeding 10-15 turns</li>\n<li>Multi-session interactions where history matters (customer support, tutoring, therapy)</li>\n<li>Context window is a hard constraint (e.g., 8k tokens, tight budget models)</li>\n<li>Earlier conversation contains facts critical to current turn (user preferences, past decisions)</li>\n<li>Conversational coherence matters (\"as we discussed earlier\" references must work)</li>\n<li>Users expect the assistant to \"remember\" information from early in the conversation</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Single-shot QA with no conversation history</li>\n<li>Conversations rarely exceed 5 turns (consolidation overhead not justified)</li>\n<li>Context window is large enough to hold entire conversation (32k+ tokens)</li>\n<li>Earlier context is irrelevant to current turn (transactional chatbots, FAQ bots)</li>\n<li>You're already using a different memory system (vector DB retrieval, external memory store)</li>\n<li>Latency budget cannot afford 1-3s consolidation overhead when threshold is hit</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li>\n<p><strong>Compression loss</strong> — Summaries lose nuance, emotional tone, and exact phrasing. If user said \"I'm allergic to peanuts\" in turn 5, consolidation might summarize as \"User has dietary restrictions\" (too vague) or drop it entirely if deemed unimportant by the consolidation LLM.</p>\n</li>\n<li>\n<p><strong>Consolidation latency</strong> — When threshold is hit, conversation pauses 1-3 seconds for summarization. Visible to user as increased response time on specific turns. Can be mitigated with async consolidation but risks race conditions.</p>\n</li>\n<li>\n<p><strong>Cost of consolidation</strong> — Each consolidation pass is an LLM call. With 5 turns consolidated every 10 new turns, you add ~0.5 LLM calls per user turn overhead. At scale, this is significant.</p>\n</li>\n<li>\n<p><strong>Coherence breaks</strong> — Model may reference exact phrasing from earlier turn, but that turn is now in compressed archive with different wording. Causes \"I don't recall saying that\" moments.</p>\n</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Premature Consolidation Loss</h3>\n<p><strong>Trigger</strong>: User makes important statement in turn 8. Conversation continues, and by turn 20, turn 8 has been consolidated. Consolidation LLM deems it unimportant and drops it.<br>\n<strong>Symptom</strong>: User references earlier statement in turn 25, but model has no memory of it. User frustrated: \"I already told you this!\"<br>\n<strong>Mitigation</strong>: Use importance-weighted consolidation: extract entities, user preferences, constraints first before summarizing. Tag critical facts as \"pinned\" to prevent compression. Allow user to explicitly flag important information: \"Remember this.\"</p>\n<h3>Consolidation Latency Spike</h3>\n<p><strong>Trigger</strong>: Consolidation happens synchronously on turn 13, adding 2.5s to response time. User perceives the conversation as \"hanging.\"<br>\n<strong>Symptom</strong>: Uneven response times. Users report \"sometimes it's fast, sometimes it freezes.\"<br>\n<strong>Mitigation</strong>: Run consolidation asynchronously after responding to user. Risk: next turn may arrive before consolidation completes, leading to race condition (consolidating already-moved turns). Use optimistic locking or skip consolidation if next turn arrives within consolidation window.</p>\n<h3>Over-Compression of Recent Context</h3>\n<p><strong>Trigger</strong>: Window threshold set too low (e.g., 5 turns). Model consolidates turn 3 while user still expects verbatim recall.<br>\n<strong>Symptom</strong>: Conversational incoherence. Model cannot reference recent exact phrasing, uses paraphrased archive instead.<br>\n<strong>Mitigation</strong>: Calibrate window size to conversational context: 8-12 turns for general chat, 15-20 for technical support where exact commands matter. Monitor user feedback on \"model forgot what I said.\"</p>\n<h3>Archive Bloat</h3>\n<p><strong>Trigger</strong>: Long conversation (100+ turns) generates large consolidated archive. Archive itself approaches context limit.<br>\n<strong>Symptom</strong>: Context overflow despite consolidation. Archive consumes 6k tokens, leaving little room for verbatim window.<br>\n<strong>Mitigation</strong>: Re-consolidate the archive periodically: summarize the summary after every 50 turns. Use hierarchical summarization (turn-level → session-level → conversation-level). Store full history externally, retrieve only relevant archive segments via semantic search.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass, field\nfrom typing import List, Optional\nimport asyncio\n\n@dataclass\nclass Message:\n    role: str  # \"user\" or \"assistant\"\n    content: str\n    turn_id: int\n    timestamp: float\n\n@dataclass\nclass ConversationMemory:\n    \"\"\"\n    Manages sliding context window with memory consolidation.\n    \"\"\"\n    verbatim_window_size: int = 10\n    consolidation_batch_size: int = 5\n    max_archive_tokens: int = 4000\n    \n    # State\n    verbatim: List[Message] = field(default_factory=list)\n    consolidated_archive: str = \"\"\n    turn_counter: int = 0\n    \n    # Consolidation callback\n    consolidation_fn: Optional[callable] = None\n\n    async def add_turn(self, role: str, content: str) -> None:\n        \"\"\"\n        Add a new turn to the conversation. Consolidates if window overflows.\n        \"\"\"\n        msg = Message(\n            role=role,\n            content=content,\n            turn_id=self.turn_counter,\n            timestamp=asyncio.get_event_loop().time()\n        )\n        self.turn_counter += 1\n        self.verbatim.append(msg)\n        \n        # Check if verbatim window overflow\n        if len(self.verbatim) > self.verbatim_window_size:\n            await self._consolidate_oldest_turns()\n    \n    async def _consolidate_oldest_turns(self) -> None:\n        \"\"\"\n        Move oldest turns from verbatim to consolidated archive.\n        \"\"\"\n        # Extract oldest batch\n        to_consolidate = self.verbatim[:self.consolidation_batch_size]\n        self.verbatim = self.verbatim[self.consolidation_batch_size:]\n        \n        # Format for consolidation\n        turns_text = \"\\n\".join([\n            f\"{msg.role.upper()}: {msg.content}\"\n            for msg in to_consolidate\n        ])\n        \n        # Consolidation prompt\n        consolidation_prompt = f\"\"\"Extract key facts, decisions, constraints, and user preferences from this conversation fragment.\n\nPreserve information critical to maintaining context in future turns:\n- User preferences and requirements\n- Decisions made or plans agreed upon\n- Important facts disclosed by either party\n- Constraints or limitations mentioned\n\nOmit:\n- Small talk and greetings\n- Redundant information already captured\n- Verbose explanations (keep only the fact)\n\nConversation fragment:\n{turns_text}\n\nFactual summary (bullet points):\"\"\"\n        \n        # Call consolidation function (LLM or custom)\n        if self.consolidation_fn:\n            summary = await self.consolidation_fn(consolidation_prompt)\n        else:\n            # Default: use lightweight LLM for consolidation\n            summary = await self._default_consolidate(consolidation_prompt)\n        \n        # Append to archive\n        if self.consolidated_archive:\n            self.consolidated_archive += f\"\\n\\n{summary}\"\n        else:\n            self.consolidated_archive = summary\n        \n        # Optional: trim archive if it grows too large\n        # (re-consolidation or semantic retrieval from external store)\n    \n    async def _default_consolidate(self, prompt: str) -> str:\n        \"\"\"Default consolidation using a lightweight LLM\"\"\"\n        # Placeholder: replace with actual LLM call\n        # Example: await llm_call(model=\"gpt-4o-mini\", prompt=prompt)\n        return \"[Summary of turns would go here]\"\n    \n    def get_context(self, system_prompt: str, user_profile: str = \"\") -> str:\n        \"\"\"\n        Build full context for LLM with immutable + archive + verbatim.\n        \"\"\"\n        parts = [system_prompt]\n        \n        if user_profile:\n            parts.append(f\"\\n## User Profile\\n{user_profile}\")\n        \n        if self.consolidated_archive:\n            parts.append(f\"\\n## Earlier Conversation (Summarized)\\n{self.consolidated_archive}\")\n        \n        parts.append(\"\\n## Recent Conversation\")\n        for msg in self.verbatim:\n            parts.append(f\"{msg.role.upper()}: {msg.content}\")\n        \n        return \"\\n\".join(parts)\n    \n    def get_token_estimate(self) -> dict:\n        \"\"\"Estimate token usage across zones for monitoring\"\"\"\n        # Rough estimate: 1 token ≈ 4 characters\n        return {\n            \"archive_tokens\": len(self.consolidated_archive) // 4,\n            \"verbatim_tokens\": sum(len(m.content) for m in self.verbatim) // 4,\n            \"total_messages\": len(self.verbatim),\n            \"consolidation_count\": self.turn_counter // self.consolidation_batch_size\n        }\n\n\n# Usage example\nasync def conversation_loop():\n    \"\"\"\n    Example conversation loop with sliding context window.\n    \"\"\"\n    memory = ConversationMemory(\n        verbatim_window_size=10,\n        consolidation_batch_size=5,\n        consolidation_fn=lambda p: llm_call(model=\"gpt-4o-mini\", prompt=p)\n    )\n    \n    system_prompt = \"You are a helpful AI assistant. Maintain context from earlier in the conversation.\"\n    user_profile = \"User: Alex, Software Engineer, prefers concise technical explanations\"\n    \n    # Simulate conversation\n    turns = [\n        (\"user\", \"I'm working on a Python async application\"),\n        (\"assistant\", \"Great! What aspect of async Python would you like help with?\"),\n        (\"user\", \"I need to understand asyncio.gather vs asyncio.wait\"),\n        # ... many more turns ...\n    ]\n    \n    for role, content in turns:\n        await memory.add_turn(role, content)\n        \n        # Build context for next response\n        if role == \"user\":\n            context = memory.get_context(system_prompt, user_profile)\n            # response = await llm_call(prompt=context)\n            # await memory.add_turn(\"assistant\", response)\n    \n    # Monitor memory usage\n    stats = memory.get_token_estimate()\n    print(f\"Archive: {stats['archive_tokens']} tokens, \"\n          f\"Verbatim: {stats['verbatim_tokens']} tokens, \"\n          f\"Consolidations: {stats['consolidation_count']}\")\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>LangChain ConversationBufferWindowMemory</td><td>Open-source</td><td>Sliding window without consolidation; naive truncation of old turns</td></tr><tr><td>LangChain ConversationSummaryMemory</td><td>Open-source</td><td>Full-history summarization; lacks verbatim window for recent context</td></tr><tr><td>LlamaIndex ChatMemoryBuffer</td><td>Open-source</td><td>Token-based truncation; can be extended with custom consolidation</td></tr><tr><td>Mem0</td><td>Managed service</td><td>Extracts entities and facts from conversations; stores in vector DB for retrieval</td></tr><tr><td>Custom implementation</td><td>DIY</td><td>Necessary for fine-grained control over consolidation timing and strategy</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/static/context-compaction-293df4.md\">Context Compaction</a></strong> — Context compaction summarizes any text to fit budget; sliding window applies compaction specifically to conversation history with zone-based strategy.</li>\n<li><strong><a href=\"/static/cascading-context-assembly-7b677e.md\">Cascading Context Assembly</a></strong> — Cascading assembly retrieves context on-demand; sliding window maintains full conversation context with compression.</li>\n<li><strong><a href=\"/static/token-budget-3971b5.md\">Token Budget</a></strong> — Token budget caps total context size; sliding window is a strategy to stay within budget for long conversations.</li>\n<li><strong><a href=\"/static/hybrid-search-9b02b1.md\">Hybrid Search</a></strong> — For very long conversations (100+ turns), store consolidated archive in vector DB and retrieve relevant segments instead of including entire archive in context.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2310.08560\">MemGPT: Towards LLMs as Operating Systems</a> — Research on hierarchical memory management for LLMs</li>\n<li><a href=\"https://arxiv.org/abs/2109.10862\">Recursively Summarizing Books with Human Feedback</a> — Anthropic research on hierarchical summarization</li>\n<li><a href=\"https://python.langchain.com/docs/modules/memory/types/\">LangChain Memory Types</a> — Overview of conversation memory patterns</li>\n<li><a href=\"https://huyenchip.com/2023/04/11/llm-engineering.html\">Building LLM Applications for Production</a> — Chip Huyen's guide, section on context management</li>\n</ul>",
+    "toc": [
+      {
+        "title": "What It Is",
+        "url": "#what-it-is",
+        "items": []
+      },
+      {
+        "title": "The Problem It Solves",
+        "url": "#the-problem-it-solves",
+        "items": []
+      },
+      {
+        "title": "How It Works",
+        "url": "#how-it-works",
+        "items": [
+          {
+            "title": "Context Zones",
+            "url": "#context-zones",
+            "items": []
+          },
+          {
+            "title": "Consolidation Process",
+            "url": "#consolidation-process",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "When to Use It",
+        "url": "#when-to-use-it",
+        "items": []
+      },
+      {
+        "title": "When NOT to Use It",
+        "url": "#when-not-to-use-it",
+        "items": []
+      },
+      {
+        "title": "Trade-offs",
+        "url": "#trade-offs",
+        "items": []
+      },
+      {
+        "title": "Failure Modes",
+        "url": "#failure-modes",
+        "items": [
+          {
+            "title": "Premature Consolidation Loss",
+            "url": "#premature-consolidation-loss",
+            "items": []
+          },
+          {
+            "title": "Consolidation Latency Spike",
+            "url": "#consolidation-latency-spike",
+            "items": []
+          },
+          {
+            "title": "Over-Compression of Recent Context",
+            "url": "#over-compression-of-recent-context",
+            "items": []
+          },
+          {
+            "title": "Archive Bloat",
+            "url": "#archive-bloat",
             "items": []
           }
         ]
