@@ -844,304 +844,6 @@
     ]
   },
   {
-    "title": "Entity Resolution Graph",
-    "pillar": "graph-patterns",
-    "status": "emerging",
-    "tags": [
-      "graph",
-      "entity-resolution",
-      "deduplication",
-      "data-quality",
-      "linking"
-    ],
-    "related": [
-      "GraphRAG",
-      "Data Contract Pattern"
-    ],
-    "description": "Use graph-based approaches to deduplicate, link, and merge entity mentions across heterogeneous data sources into a unified knowledge graph.",
-    "contributors": [
-      "@PrajwalAmte"
-    ],
-    "last_updated": "2026-03",
-    "sidebar": {
-      "order": 3
-    },
-    "slug": "graph-patterns/entity-resolution-graph",
-    "body": "<h2>What It Is</h2>\n<p>Entity Resolution Graph is a pattern that uses graph algorithms to identify, link, and merge mentions of the same real-world entity across multiple data sources. Instead of relying purely on string matching or embedding similarity, it models candidate matches as a graph and uses connectivity, transitivity, and community detection to make resolution decisions that individual pairwise comparisons miss.</p>\n<h2>The Problem It Solves</h2>\n<p>AI systems ingest data from many sources. The same entity (customer, product, location, concept) appears with different names, formats, and identifiers across sources:</p>\n<ul>\n<li>\"Microsoft Corp\", \"MSFT\", \"Microsoft Corporation\" in financial data.</li>\n<li>\"Dr. Jane Smith\", \"J. Smith\", \"<a href=\"mailto:jane.smith@hospital.org\">jane.smith@hospital.org</a>\" in medical records.</li>\n<li>\"GPT-4\", \"gpt-4-turbo\", \"OpenAI GPT4\" in technical documentation.</li>\n</ul>\n<p>Without resolution, knowledge graphs have duplicate nodes, RAG systems retrieve fragmented context, and analytics produce wrong counts. Pairwise matching alone fails because:</p>\n<ul>\n<li>It misses transitive links: A matches B, B matches C, but A does not directly match C.</li>\n<li>It cannot use graph structure: an entity connected to the same neighbors is likely the same entity even if names differ.</li>\n</ul>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Mentions from source A\"] --> D[\"Candidate generation (blocking)\"]\n    B[\"Mentions from source B\"] --> D\n    C[\"Mentions from source C\"] --> D\n    D --> E[\"Pairwise similarity scoring\"]\n    E --> F[\"Build resolution graph\"]\n    F --> G[\"Community detection / clustering\"]\n    G --> H[\"Merge cluster into canonical entities\"]\n    H --> I[\"Deduplicated entity store\"]\n</pre>\n<ol>\n<li><strong>Extract mentions</strong> — Pull entity mentions from each source with context (surrounding text, metadata, co-occurring entities).</li>\n<li><strong>Blocking</strong> — Create candidate pairs using cheap heuristics (same first letter, shared token, locality-sensitive hashing) to avoid O(n^2) comparisons.</li>\n<li><strong>Pairwise scoring</strong> — Score candidate pairs using string similarity (Jaro-Winkler, edit distance), embedding cosine similarity, or an LLM-based judge.</li>\n<li><strong>Build resolution graph</strong> — Create a graph where nodes are mentions and edges are scored similarities above a threshold.</li>\n<li><strong>Community detection</strong> — Run connected components, Louvain clustering, or label propagation to identify clusters of mentions that refer to the same entity.</li>\n<li><strong>Merge</strong> — For each cluster, select or synthesize a canonical entity record that combines the best attributes from all mentions.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>You are building a knowledge graph from multiple data sources and need deduplicated entities.</li>\n<li>Your RAG system retrieves fragmented and contradictory information about the same entity from different documents.</li>\n<li>Analytics or reporting requires accurate entity counts across heterogeneous sources.</li>\n<li>You have long-tail entities (niche products, internal tools, domain-specific terms) that embedding models have not seen.</li>\n</ul>\n<h2>When not to Use It</h2>\n<ul>\n<li>Entities have reliable unique identifiers across all sources (UUIDs, standardized codes). Simple join-on-ID is cheaper and more accurate.</li>\n<li>The entity space is small and manually curated. A lookup table or alias mapping is simpler and more maintainable.</li>\n<li>Real-time resolution is required. Graph-based approaches are batch-oriented. For real-time, use embedding-based nearest neighbor lookup.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Blocking quality</strong> — The blocking strategy determines recall. Aggressive blocking (more pairs) catches more matches but costs more compute. Conservative blocking misses matches.</li>\n<li><strong>Threshold sensitivity</strong> — The similarity threshold for creating graph edges controls precision/recall. Too low creates false links; too high misses valid ones.</li>\n<li><strong>Transitive errors</strong> — Graph-based approaches propagate errors: one bad edge can merge two unrelated entity clusters.</li>\n<li><strong>Maintenance cost</strong> — New data sources require re-running or incrementally updating the resolution pipeline.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Transitive Merge Cascade</h3>\n<p><strong>Trigger</strong>: A single incorrect edge links two unrelated entity clusters, and community detection merges them into one super-cluster.\n<strong>Symptom</strong>: Hundreds of unrelated entities share a canonical record. Downstream queries get nonsensical answers because the \"entity\" now represents multiple real-world things.\n<strong>Mitigation</strong>: Set a maximum cluster size threshold. Flag clusters that grow beyond expected bounds for manual review. Use edge confidence scores and remove low-confidence edges before community detection.</p>\n<h3>Blocking Function Misses Cross-Script Entities</h3>\n<p><strong>Trigger</strong>: The blocking function uses first-N characters or phonetic hashing, but entity mentions span multiple scripts or languages (\"München\" vs. \"Munich\").\n<strong>Symptom</strong>: Valid matches are never generated as candidate pairs because they fall into different blocks. Recall drops silently for multilingual corpora.\n<strong>Mitigation</strong>: Use embedding-based blocking that captures semantic similarity across languages. Add transliteration normalization before blocking.</p>\n<h3>Stale Canonical After New Source Ingestion</h3>\n<p><strong>Trigger</strong>: A new data source provides better-quality entity data than the original canonical, but the pipeline always preserves the first-seen canonical.\n<strong>Symptom</strong>: Canonical records remain low-quality even though superior data exists in the cluster. Retrieval surfaces the weaker representation.\n<strong>Mitigation</strong>: Re-evaluate canonical selection when new sources are added, using a quality scoring function (completeness, recency, source authority). Allow canonical promotion.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass, field\n\n\n@dataclass\nclass EntityMention:\n    mention_id: str\n    source: str\n    name: str\n    context: str = \"\"\n    attributes: dict = field(default_factory=dict)\n\n\ndef jaro_winkler_similarity(s1: str, s2: str) -> float:\n    if s1 == s2:\n        return 1.0\n    len1, len2 = len(s1), len(s2)\n    if len1 == 0 or len2 == 0:\n        return 0.0\n    match_distance = max(len1, len2) // 2 - 1\n    s1_matches = [False] * len1\n    s2_matches = [False] * len2\n    matches = 0\n    transpositions = 0\n\n    for i in range(len1):\n        start = max(0, i - match_distance)\n        end = min(i + match_distance + 1, len2)\n        for j in range(start, end):\n            if s2_matches[j] or s1[i] != s2[j]:\n                continue\n            s1_matches[i] = True\n            s2_matches[j] = True\n            matches += 1\n            break\n\n    if matches == 0:\n        return 0.0\n\n    k = 0\n    for i in range(len1):\n        if not s1_matches[i]:\n            continue\n        while not s2_matches[k]:\n            k += 1\n        if s1[i] != s2[k]:\n            transpositions += 1\n        k += 1\n\n    jaro = (\n        matches / len1 + matches / len2 + (matches - transpositions / 2) / matches\n    ) / 3\n    prefix_len = 0\n    for i in range(min(4, min(len1, len2))):\n        if s1[i] == s2[i]:\n            prefix_len += 1\n        else:\n            break\n\n    return jaro + prefix_len * 0.1 * (1 - jaro)\n\n\nclass ResolutionGraph:\n    def __init__(self, threshold: float = 0.85):\n        self._mentions: dict[str, EntityMention] = {}\n        self._edges: dict[str, list[tuple[str, float]]] = {}\n        self._threshold = threshold\n\n    def add_mention(self, mention: EntityMention) -> None:\n        self._mentions[mention.mention_id] = mention\n        self._edges[mention.mention_id] = []\n\n    def compute_similarities(self) -> None:\n        mention_ids = list(self._mentions.keys())\n        for i in range(len(mention_ids)):\n            for j in range(i + 1, len(mention_ids)):\n                m1 = self._mentions[mention_ids[i]]\n                m2 = self._mentions[mention_ids[j]]\n                sim = jaro_winkler_similarity(m1.name.lower(), m2.name.lower())\n                if sim >= self._threshold:\n                    self._edges[mention_ids[i]].append((mention_ids[j], sim))\n                    self._edges[mention_ids[j]].append((mention_ids[i], sim))\n\n    def find_clusters(self) -> list[set[str]]:\n        visited: set[str] = set()\n        clusters: list[set[str]] = []\n        for mention_id in self._mentions:\n            if mention_id in visited:\n                continue\n            cluster: set[str] = set()\n            queue = [mention_id]\n            while queue:\n                current = queue.pop(0)\n                if current in visited:\n                    continue\n                visited.add(current)\n                cluster.add(current)\n                for neighbor_id, _ in self._edges.get(current, []):\n                    if neighbor_id not in visited:\n                        queue.append(neighbor_id)\n            clusters.append(cluster)\n        return clusters\n\n    def resolve(self) -> list[dict]:\n        self.compute_similarities()\n        clusters = self.find_clusters()\n        resolved = []\n        for cluster in clusters:\n            mentions = [self._mentions[mid] for mid in cluster]\n            canonical = max(mentions, key=lambda m: len(m.name))\n            resolved.append({\n                \"canonical_name\": canonical.name,\n                \"sources\": list({m.source for m in mentions}),\n                \"mention_count\": len(mentions),\n                \"all_names\": list({m.name for m in mentions}),\n            })\n        return resolved\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>Dedupe</td><td>Open-source Python</td><td>Active learning based entity resolution with blocking</td></tr><tr><td>Senzing</td><td>Commercial</td><td>Real-time entity resolution engine with graph-based approach</td></tr><tr><td>Neo4j + GDS</td><td>Graph DB + library</td><td>Community detection algorithms (Louvain, WCC) on entity graphs</td></tr><tr><td>Splink</td><td>Open-source (UK Gov)</td><td>Probabilistic record linkage at scale with Spark support</td></tr><tr><td>LLM-based judge</td><td>Custom</td><td>Use LLM to score whether two mentions refer to the same entity</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/\">GraphRAG</a></strong> — A clean entity-resolved knowledge graph is the foundation for effective GraphRAG.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/data-patterns/data-contract/\">Data Contract Pattern</a></strong> — Data contracts can enforce entity ID standards that reduce the need for resolution.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2312.10714\">A Survey of Entity Resolution and Entity Matching</a></li>\n<li><a href=\"https://docs.dedupe.io/\">Dedupe Library Documentation</a></li>\n<li><a href=\"https://moj-analytical-services.github.io/splink/\">Splink: Probabilistic Record Linkage at Scale</a></li>\n</ul>",
-    "toc": [
-      {
-        "title": "What It Is",
-        "url": "#what-it-is",
-        "items": []
-      },
-      {
-        "title": "The Problem It Solves",
-        "url": "#the-problem-it-solves",
-        "items": []
-      },
-      {
-        "title": "How It Works",
-        "url": "#how-it-works",
-        "items": []
-      },
-      {
-        "title": "When to Use It",
-        "url": "#when-to-use-it",
-        "items": []
-      },
-      {
-        "title": "When not to Use It",
-        "url": "#when-not-to-use-it",
-        "items": []
-      },
-      {
-        "title": "Trade-offs",
-        "url": "#trade-offs",
-        "items": []
-      },
-      {
-        "title": "Failure Modes",
-        "url": "#failure-modes",
-        "items": [
-          {
-            "title": "Transitive Merge Cascade",
-            "url": "#transitive-merge-cascade",
-            "items": []
-          },
-          {
-            "title": "Blocking Function Misses Cross-Script Entities",
-            "url": "#blocking-function-misses-cross-script-entities",
-            "items": []
-          },
-          {
-            "title": "Stale Canonical After New Source Ingestion",
-            "url": "#stale-canonical-after-new-source-ingestion",
-            "items": []
-          }
-        ]
-      },
-      {
-        "title": "Implementation Example",
-        "url": "#implementation-example",
-        "items": []
-      },
-      {
-        "title": "Tool Landscape",
-        "url": "#tool-landscape",
-        "items": []
-      },
-      {
-        "title": "Related Patterns",
-        "url": "#related-patterns",
-        "items": []
-      },
-      {
-        "title": "Further Reading",
-        "url": "#further-reading",
-        "items": []
-      }
-    ]
-  },
-  {
-    "title": "Graph of Thoughts",
-    "pillar": "graph-patterns",
-    "status": "emerging",
-    "tags": [
-      "reasoning",
-      "graph",
-      "multi-path",
-      "planning",
-      "llm"
-    ],
-    "related": [
-      "GraphRAG",
-      "Entity Resolution Graph"
-    ],
-    "description": "Structure LLM reasoning as a directed graph where thoughts branch, merge, and loop to solve complex problems that linear chains cannot.",
-    "contributors": [
-      "@PrajwalAmte"
-    ],
-    "last_updated": "2026-03",
-    "sidebar": {
-      "order": 2
-    },
-    "slug": "graph-patterns/graph-of-thoughts",
-    "body": "<h2>What It Is</h2>\n<p>Graph of Thoughts (GoT) structures LLM reasoning as a directed graph rather than a linear chain. Each node is a partial solution or reasoning step. Edges represent transformations — refinement, aggregation, or branching. This allows the model to explore multiple approaches in parallel, merge the best parts, and iteratively refine, producing higher-quality outputs for complex multi-step problems.</p>\n<h2>The Problem It Solves</h2>\n<p>Chain-of-thought (CoT) prompting produces a single linear chain of reasoning. If the model makes a wrong step early, the entire chain follows the wrong path. There is no backtracking, no parallel exploration, and no way to combine partial solutions from different approaches.</p>\n<ul>\n<li><strong>Sorting a list</strong>: CoT must process linearly. GoT can split the list, sort sub-lists in parallel, and merge.</li>\n<li><strong>Writing code</strong>: CoT generates one solution. GoT can explore multiple approaches, evaluate each, and combine the best elements.</li>\n<li><strong>Planning</strong>: CoT commits to one plan. GoT can maintain multiple plan branches and converge on the strongest.</li>\n</ul>\n<p>Linear reasoning is a bottleneck for problems that benefit from divide-and-conquer, parallel exploration, or iterative refinement.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Initial problem\"] --> B[\"Decompose into reasoning branches\"]\n    B --> C1[\"Branch A: generate partial solution\"]\n    B --> C2[\"Branch B: generate partial solution\"]\n    B --> C3[\"Branch C: generate partial solution\"]\n    C1 --> D1[\"Score A\"]\n    C2 --> D2[\"Score B\"]\n    C3 --> D3[\"Score C\"]\n    D1 --> E[\"Aggregate strongest branches\"]\n    D2 --> E\n    D3 --> E\n    E --> F[\"Refine merged result\"]\n    F --> G{\"Quality threshold met?\"}\n    G -->|\"No\"| B\n    G -->|\"Yes\"| H[\"Final answer\"]\n</pre>\n<ol>\n<li><strong>Decompose</strong> — Break the problem into sub-problems or generate alternative approaches.</li>\n<li><strong>Generate</strong> — For each branch, produce a partial solution using the LLM.</li>\n<li><strong>Score</strong> — Evaluate each branch using the LLM as a judge or an external evaluator.</li>\n<li><strong>Aggregate</strong> — Merge the best branches. Aggregation can be simple selection, weighted combination, or LLM-driven synthesis.</li>\n<li><strong>Refine</strong> — Pass the aggregated result through one or more refinement steps.</li>\n<li><strong>Repeat</strong> — Loop until a quality threshold is met or a fixed number of iterations complete.</li>\n</ol>\n<p>The graph is constructed programmatically by an orchestrator, not by the LLM itself. The LLM is called at each node for generation, scoring, and aggregation.</p>\n<h2>When to Use It</h2>\n<ul>\n<li>Problems that are naturally decomposable into independent sub-problems (sorting, code generation, document analysis).</li>\n<li>Tasks where exploring multiple approaches and picking the best yields significantly better results than a single linear attempt.</li>\n<li>Scenarios where partial solutions from different approaches can be meaningfully combined.</li>\n<li>Quality-critical tasks where the cost of multiple LLM calls is justified by output quality improvement.</li>\n</ul>\n<h2>When not to Use It</h2>\n<ul>\n<li>Simple questions with single-step answers. The overhead of graph construction and multiple LLM calls is not justified.</li>\n<li>Latency-sensitive requests. GoT requires multiple sequential and parallel LLM calls, which adds significant latency.</li>\n<li>Tasks where the LLM already achieves near-perfect accuracy with a single call or simple CoT.</li>\n<li>When budget constraints prevent the 3-10x token cost increase over a single call.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Token cost</strong> — GoT uses 3-10x more tokens than a single LLM call due to branching, scoring, and aggregation. Each node is a separate inference call.</li>\n<li><strong>Latency</strong> — Even with parallel branch execution, the sequential depth of the graph (decompose, generate, score, merge, refine) adds significant latency.</li>\n<li><strong>Orchestration complexity</strong> — Building the graph, managing state, handling failures at individual nodes, and implementing the scoring/aggregation logic requires substantial engineering.</li>\n<li><strong>Diminishing returns</strong> — For many tasks, Tree-of-Thought or even simple best-of-N sampling achieves most of GoT's quality improvement at lower complexity.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Scoring Function Misalignment</h3>\n<p><strong>Trigger</strong>: The scoring LLM evaluates thought nodes on surface-level quality (fluency, length) rather than logical correctness.\n<strong>Symptom</strong>: The graph selects confidently wrong branches over tentative but correct ones. Final merged output inherits errors from the highest-scored (but incorrect) paths.\n<strong>Mitigation</strong>: Design scoring prompts that explicitly evaluate factual accuracy and logical consistency, not just prose quality. Validate the scorer against a held-out set of known-correct and known-incorrect intermediate steps.</p>\n<h3>Merge Step Drops Key Information</h3>\n<p><strong>Trigger</strong>: The aggregation prompt that merges solutions from multiple branches has a limited context window and must summarize.\n<strong>Symptom</strong>: Critical details from individual branches are lost during merging. The final answer is syntactically coherent but missing nuances that individual branches captured.\n<strong>Mitigation</strong>: Use structured extraction from each branch before merging (key claims, numerical results, constraints). Merge from structured data, not raw text.</p>\n<h3>Decomposition Explosion</h3>\n<p><strong>Trigger</strong>: The decomposition step splits a problem into too many sub-problems, each of which branches further.\n<strong>Symptom</strong>: Token costs and latency grow exponentially. Many branches explore trivial or redundant variations. Most of the compute is wasted.\n<strong>Mitigation</strong>: Limit branching factor and graph depth. Score sub-problems for independence — discard those that are redundant or trivially solvable. Set a total token budget for the entire GoT execution.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass, field\nfrom enum import Enum\n\n\nclass NodeType(Enum):\n    GENERATE = \"generate\"\n    SCORE = \"score\"\n    AGGREGATE = \"aggregate\"\n    REFINE = \"refine\"\n\n\n@dataclass\nclass ThoughtNode:\n    node_id: str\n    node_type: NodeType\n    content: str = \"\"\n    score: float = 0.0\n    children: list[str] = field(default_factory=list)\n    parents: list[str] = field(default_factory=list)\n\n\nclass GraphOfThoughts:\n    def __init__(self):\n        self._nodes: dict[str, ThoughtNode] = {}\n        self._counter = 0\n\n    def _next_id(self) -> str:\n        self._counter += 1\n        return f\"node_{self._counter}\"\n\n    def add_thought(\n        self,\n        node_type: NodeType,\n        content: str,\n        parents: list[str] | None = None,\n    ) -> str:\n        node_id = self._next_id()\n        node = ThoughtNode(\n            node_id=node_id,\n            node_type=node_type,\n            content=content,\n            parents=parents or [],\n        )\n        self._nodes[node_id] = node\n        for parent_id in node.parents:\n            if parent_id in self._nodes:\n                self._nodes[parent_id].children.append(node_id)\n        return node_id\n\n    def score_node(self, node_id: str, score: float) -> None:\n        self._nodes[node_id].score = score\n\n    def get_top_branches(self, node_ids: list[str], k: int = 2) -> list[str]:\n        scored = [(nid, self._nodes[nid].score) for nid in node_ids]\n        scored.sort(key=lambda x: x[1], reverse=True)\n        return [nid for nid, _ in scored[:k]]\n\n    def get_node(self, node_id: str) -> ThoughtNode:\n        return self._nodes[node_id]\n\n\ndef solve_with_got(problem: str, num_branches: int = 3) -> str:\n    graph = GraphOfThoughts()\n    root = graph.add_thought(NodeType.GENERATE, problem)\n\n    branch_ids = []\n    for i in range(num_branches):\n        branch_content = f\"Approach {i + 1} for: {problem}\"\n        bid = graph.add_thought(NodeType.GENERATE, branch_content, [root])\n        graph.score_node(bid, evaluate_branch(branch_content))\n        branch_ids.append(bid)\n\n    top_ids = graph.get_top_branches(branch_ids, k=2)\n    top_contents = [graph.get_node(nid).content for nid in top_ids]\n    merged = f\"Combined solution from: {'; '.join(top_contents)}\"\n    merge_id = graph.add_thought(NodeType.AGGREGATE, merged, top_ids)\n\n    refined = f\"Refined: {merged}\"\n    graph.add_thought(NodeType.REFINE, refined, [merge_id])\n    return refined\n\n\ndef evaluate_branch(content: str) -> float:\n    return len(content) / 100.0\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>LangGraph</td><td>Framework</td><td>Arbitrary graph-based LLM workflows with state management</td></tr><tr><td>Microsoft AutoGen</td><td>Multi-agent framework</td><td>Supports branching conversation patterns between agents</td></tr><tr><td>DSPy</td><td>Optimization framework</td><td>Composable modules that can implement GoT-style pipelines</td></tr><tr><td>Custom orchestrator</td><td>DIY</td><td>Most GoT implementations are bespoke due to problem-specific graph structures</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/\">GraphRAG</a></strong> — Graph structure for retrieval context. GoT is graph structure for reasoning.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/entity-resolution-graph/\">Entity Resolution Graph</a></strong> — Complementary graph pattern focused on data quality rather than reasoning.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2308.09687\">Graph of Thoughts: Solving Elaborate Problems with Large Language Models</a></li>\n<li><a href=\"https://arxiv.org/abs/2404.15676\">Beyond Chain-of-Thought: A Survey of Chain-of-X Paradigms</a></li>\n<li><a href=\"https://langchain-ai.github.io/langgraph/\">LangGraph Documentation</a></li>\n</ul>",
-    "toc": [
-      {
-        "title": "What It Is",
-        "url": "#what-it-is",
-        "items": []
-      },
-      {
-        "title": "The Problem It Solves",
-        "url": "#the-problem-it-solves",
-        "items": []
-      },
-      {
-        "title": "How It Works",
-        "url": "#how-it-works",
-        "items": []
-      },
-      {
-        "title": "When to Use It",
-        "url": "#when-to-use-it",
-        "items": []
-      },
-      {
-        "title": "When not to Use It",
-        "url": "#when-not-to-use-it",
-        "items": []
-      },
-      {
-        "title": "Trade-offs",
-        "url": "#trade-offs",
-        "items": []
-      },
-      {
-        "title": "Failure Modes",
-        "url": "#failure-modes",
-        "items": [
-          {
-            "title": "Scoring Function Misalignment",
-            "url": "#scoring-function-misalignment",
-            "items": []
-          },
-          {
-            "title": "Merge Step Drops Key Information",
-            "url": "#merge-step-drops-key-information",
-            "items": []
-          },
-          {
-            "title": "Decomposition Explosion",
-            "url": "#decomposition-explosion",
-            "items": []
-          }
-        ]
-      },
-      {
-        "title": "Implementation Example",
-        "url": "#implementation-example",
-        "items": []
-      },
-      {
-        "title": "Tool Landscape",
-        "url": "#tool-landscape",
-        "items": []
-      },
-      {
-        "title": "Related Patterns",
-        "url": "#related-patterns",
-        "items": []
-      },
-      {
-        "title": "Further Reading",
-        "url": "#further-reading",
-        "items": []
-      }
-    ]
-  },
-  {
-    "title": "GraphRAG",
-    "pillar": "graph-patterns",
-    "status": "validated-in-production",
-    "tags": [
-      "graph",
-      "rag",
-      "knowledge-graph",
-      "retrieval",
-      "multi-hop"
-    ],
-    "related": [
-      "Hybrid Search",
-      "Entity Resolution Graph",
-      "Graph of Thoughts"
-    ],
-    "description": "Augment RAG with knowledge graphs for multi-hop reasoning, entity relationships, and structured context that vector search alone cannot provide.",
-    "contributors": [
-      "@PrajwalAmte"
-    ],
-    "last_updated": "2026-03",
-    "sidebar": {
-      "order": 1
-    },
-    "slug": "graph-patterns/graph-rag",
-    "body": "<h2>What It Is</h2>\n<p>GraphRAG combines traditional vector-based retrieval with a knowledge graph to provide structured, relationship-aware context to LLMs. Instead of retrieving isolated text chunks, GraphRAG traverses entity relationships in a graph to assemble context that spans multiple documents and captures how concepts connect.</p>\n<h2>The Problem It Solves</h2>\n<p>Standard RAG retrieves chunks of text that are semantically similar to the query. This works for factual lookups but breaks down when the answer requires connecting information across multiple documents or understanding relationships between entities.</p>\n<ul>\n<li>\"Which team members have worked on projects that use the same technology stack?\" requires joining person-project-technology relationships.</li>\n<li>\"What are the downstream effects of deprecating Service X?\" requires traversing a dependency graph.</li>\n<li>\"Compare the approaches used by Team A and Team B for authentication\" requires pulling and connecting information from separate sources.</li>\n</ul>\n<p>Vector similarity alone cannot express graph traversals, joins, or multi-hop reasoning.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"User query\"] --> B[\"Entity extraction\"]\n    A --> C[\"Vector retrieval\"]\n    B --> D[\"Knowledge graph traversal\"]\n    D --> E[\"Graph facts and relationships\"]\n    C --> F[\"Unstructured passages\"]\n    E --> G[\"Context assembly\"]\n    F --> G\n    G --> H[\"LLM generation\"]\n    H --> I[\"Answer\"]\n</pre>\n<ol>\n<li><strong>Entity extraction</strong> — Extract entities and intent from the query using NER or an LLM.</li>\n<li><strong>Graph traversal</strong> — Look up extracted entities in the knowledge graph and traverse relationships to gather structured context (neighbors, paths, subgraphs).</li>\n<li><strong>Vector retrieval</strong> — Run standard embedding search in parallel for unstructured context.</li>\n<li><strong>Context assembly</strong> — Merge graph-derived facts (entity properties, relationships, paths) with vector-retrieved passages into a structured prompt.</li>\n<li><strong>Generation</strong> — Send the enriched context to the LLM for answer generation.</li>\n</ol>\n<p>The knowledge graph can be prebuilt from documents using an entity extraction pipeline, or maintained as a curated knowledge base.</p>\n<h2>When to Use It</h2>\n<ul>\n<li>Queries frequently require connecting information across multiple documents.</li>\n<li>Your domain has clear entity relationships (org charts, dependency maps, product catalogs, medical knowledge bases).</li>\n<li>Users ask comparative, relational, or multi-hop questions.</li>\n<li>You need explainable retrieval — the graph traversal path shows why certain context was included.</li>\n<li>Standard RAG recall is poor for relationship queries despite good chunk quality.</li>\n</ul>\n<h2>When not to Use It</h2>\n<ul>\n<li>Queries are simple factual lookups that vector search handles well. GraphRAG adds significant complexity for marginal improvement on single-hop questions.</li>\n<li>You do not have clean, structured data to build a knowledge graph from. Garbage-in-garbage-out applies even more to graphs than to vector stores.</li>\n<li>The knowledge base changes so frequently that maintaining a graph is impractical. Graph construction and updates are expensive.</li>\n<li>Your team cannot invest in graph infrastructure (Neo4j, Neptune, or similar) and the associated operational overhead.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Graph construction cost</strong> — Building and maintaining a knowledge graph from unstructured documents requires an entity extraction pipeline, which introduces its own error rate and latency.</li>\n<li><strong>Query routing complexity</strong> — Not every query benefits from graph traversal. You need a router to decide when to activate the graph path vs. pure vector retrieval.</li>\n<li><strong>Staleness risk</strong> — The knowledge graph can drift from source documents if the extraction pipeline is not run on every update.</li>\n<li><strong>Infrastructure overhead</strong> — Requires a graph database in addition to the vector store. Two systems to maintain, monitor, and back up.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Entity Extraction Hallucination</h3>\n<p><strong>Trigger</strong>: The extraction pipeline (often an LLM) hallucinates entities or relationships during knowledge graph construction.\n<strong>Symptom</strong>: The graph contains phantom nodes and edges. Queries that traverse these edges return confident but fabricated answers grounded in non-existent relationships.\n<strong>Mitigation</strong>: Validate extracted triples against source documents. Use extraction confidence scores and discard low-confidence triples. Periodically audit random graph subsets.</p>\n<h3>Over-Traversal on Vague Queries</h3>\n<p><strong>Trigger</strong>: A broad or ambiguous query causes the graph traversal to fan out through many hops, pulling in loosely related context.\n<strong>Symptom</strong>: Context window fills with tangentially related graph output. The LLM produces verbose, unfocused answers. Latency spikes from deep traversal.\n<strong>Mitigation</strong>: Set a maximum traversal depth and node limit per query. Score relevance at each hop and prune low-relevance paths. Fall back to vector search for queries that do not map cleanly to entity lookups.</p>\n<h3>Graph Staleness After Source Update</h3>\n<p><strong>Trigger</strong>: Source documents are updated but the knowledge graph extraction pipeline runs on a schedule (daily, weekly) rather than in real-time.\n<strong>Symptom</strong>: Graph contains outdated relationships. A vector search might return updated content, but the graph path retrieves stale context, creating contradictions in the prompt.\n<strong>Mitigation</strong>: Track source document versions in graph metadata. Flag graph nodes whose source has been modified since extraction. Prioritize re-extraction of flagged subgraphs.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass, field\n\n\n@dataclass\nclass Entity:\n    name: str\n    entity_type: str\n    properties: dict = field(default_factory=dict)\n\n\n@dataclass\nclass Relationship:\n    source: str\n    target: str\n    relation_type: str\n    properties: dict = field(default_factory=dict)\n\n\nclass KnowledgeGraph:\n    def __init__(self):\n        self._entities: dict[str, Entity] = {}\n        self._adjacency: dict[str, list[Relationship]] = {}\n\n    def add_entity(self, entity: Entity) -> None:\n        self._entities[entity.name] = entity\n        if entity.name not in self._adjacency:\n            self._adjacency[entity.name] = []\n\n    def add_relationship(self, rel: Relationship) -> None:\n        if rel.source not in self._adjacency:\n            self._adjacency[rel.source] = []\n        self._adjacency[rel.source].append(rel)\n\n    def get_neighbors(self, entity_name: str, max_depth: int = 2) -> list[dict]:\n        visited: set[str] = set()\n        results: list[dict] = []\n        queue: list[tuple[str, int]] = [(entity_name, 0)]\n\n        while queue:\n            current, depth = queue.pop(0)\n            if current in visited or depth > max_depth:\n                continue\n            visited.add(current)\n\n            for rel in self._adjacency.get(current, []):\n                results.append({\n                    \"source\": current,\n                    \"relation\": rel.relation_type,\n                    \"target\": rel.target,\n                    \"depth\": depth,\n                })\n                if rel.target not in visited:\n                    queue.append((rel.target, depth + 1))\n\n        return results\n\n    def get_entity(self, name: str) -> Entity | None:\n        return self._entities.get(name)\n\n\ndef extract_entities(query: str) -> list[str]:\n    return [token for token in query.split() if token[0].isupper()]\n\n\ndef build_graph_context(\n    graph: KnowledgeGraph,\n    entities: list[str],\n    max_depth: int = 2,\n) -> str:\n    context_lines = []\n    for entity_name in entities:\n        entity = graph.get_entity(entity_name)\n        if not entity:\n            continue\n        context_lines.append(f\"Entity: {entity.name} ({entity.entity_type})\")\n        neighbors = graph.get_neighbors(entity_name, max_depth)\n        for rel in neighbors:\n            context_lines.append(\n                f\"  {rel['source']} --[{rel['relation']}]--> {rel['target']}\"\n            )\n    return \"\\n\".join(context_lines)\n\n\ndef graph_rag_query(\n    query: str,\n    graph: KnowledgeGraph,\n    vector_results: list[str],\n) -> str:\n    entities = extract_entities(query)\n    graph_context = build_graph_context(graph, entities)\n    vector_context = \"\\n\".join(vector_results)\n    prompt = (\n        f\"Answer the following question using the provided context.\\n\\n\"\n        f\"Graph Context (entity relationships):\\n{graph_context}\\n\\n\"\n        f\"Document Context (retrieved passages):\\n{vector_context}\\n\\n\"\n        f\"Question: {query}\"\n    )\n    return prompt\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>Neo4j + LangChain</td><td>Graph DB + framework</td><td>Native Cypher queries combined with LLM chains</td></tr><tr><td>Microsoft GraphRAG</td><td>Open-source library</td><td>Builds community summaries from documents, designed for global queries</td></tr><tr><td>Amazon Neptune</td><td>Managed graph DB</td><td>Enterprise-grade, integrates with AWS Bedrock for LLM</td></tr><tr><td>FalkorDB</td><td>Open-source graph DB</td><td>Low-latency graph queries optimized for RAG workloads</td></tr><tr><td>LlamaIndex Knowledge Graph</td><td>Framework</td><td>Property graph index with automatic entity extraction</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/retrieval-and-memory/hybrid-search/\">Hybrid Search</a></strong> — Combine with GraphRAG for both semantic and structural retrieval.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/entity-resolution-graph/\">Entity Resolution Graph</a></strong> — Clean entity data is a prerequisite for a useful knowledge graph.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-of-thoughts/\">Graph of Thoughts</a></strong> — Graph reasoning at inference time complements graph-structured retrieval.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2404.16130\">Microsoft GraphRAG Paper</a></li>\n<li><a href=\"https://www.microsoft.com/en-us/research/blog/graphrag-unlocking-llm-discovery-on-narrative-private-data/\">GraphRAG: Unlocking LLM Discovery on Narrative Private Data</a></li>\n<li><a href=\"https://neo4j.com/docs/neo4j-graphrag-python/current/\">Neo4j GraphRAG Python Package</a></li>\n</ul>",
-    "toc": [
-      {
-        "title": "What It Is",
-        "url": "#what-it-is",
-        "items": []
-      },
-      {
-        "title": "The Problem It Solves",
-        "url": "#the-problem-it-solves",
-        "items": []
-      },
-      {
-        "title": "How It Works",
-        "url": "#how-it-works",
-        "items": []
-      },
-      {
-        "title": "When to Use It",
-        "url": "#when-to-use-it",
-        "items": []
-      },
-      {
-        "title": "When not to Use It",
-        "url": "#when-not-to-use-it",
-        "items": []
-      },
-      {
-        "title": "Trade-offs",
-        "url": "#trade-offs",
-        "items": []
-      },
-      {
-        "title": "Failure Modes",
-        "url": "#failure-modes",
-        "items": [
-          {
-            "title": "Entity Extraction Hallucination",
-            "url": "#entity-extraction-hallucination",
-            "items": []
-          },
-          {
-            "title": "Over-Traversal on Vague Queries",
-            "url": "#over-traversal-on-vague-queries",
-            "items": []
-          },
-          {
-            "title": "Graph Staleness After Source Update",
-            "url": "#graph-staleness-after-source-update",
-            "items": []
-          }
-        ]
-      },
-      {
-        "title": "Implementation Example",
-        "url": "#implementation-example",
-        "items": []
-      },
-      {
-        "title": "Tool Landscape",
-        "url": "#tool-landscape",
-        "items": []
-      },
-      {
-        "title": "Related Patterns",
-        "url": "#related-patterns",
-        "items": []
-      },
-      {
-        "title": "Further Reading",
-        "url": "#further-reading",
-        "items": []
-      }
-    ]
-  },
-  {
     "title": "LLM Gateway",
     "pillar": "inference-and-serving",
     "status": "validated-in-production",
@@ -1525,233 +1227,30 @@
     ]
   },
   {
-    "title": "Loop Termination",
-    "pillar": "loop-engineering",
-    "status": "validated-in-production",
-    "tags": [
-      "loops",
-      "agents",
-      "termination",
-      "iteration",
-      "control-flow"
-    ],
-    "related": [
-      "Token Budget Pattern",
-      "Circuit Breaker for LLMs",
-      "No-Progress Detection",
-      "Reflexion Loop"
-    ],
-    "description": "A composite stop-decision — iteration ceiling, goal verification, and no-progress signal — that runs after every step of an agentic loop so it stops for the right reason.",
-    "contributors": [
-      "@PrajwalAmte"
-    ],
-    "last_updated": "2026-07",
-    "sidebar": {
-      "order": 1
-    },
-    "slug": "loop-engineering/loop-termination",
-    "body": "<h2>What It Is</h2>\n<p>The Loop Termination pattern is a single stop-decision function that an agentic loop (reason-act-observe, plan-execute-verify, or any \"keep going until done\" agent) consults after every step. It combines three independent signals — an iteration ceiling, a goal-verification check, and a no-progress signal — into one gate, rather than relying on any single condition to catch every way a loop can go wrong.</p>\n<h2>The Problem It Solves</h2>\n<p>An agent loop has no natural end unless one is designed in. Left with only one stopping condition, loops fail in predictable ways:</p>\n<ul>\n<li>A token budget alone doesn't catch a loop making many small, cheap calls that never converge — each iteration is inexpensive, so the loop can run for hours without tripping a cost limit.</li>\n<li>An iteration ceiling alone stops the loop eventually, but only after burning the full ceiling even when the agent stalled at iteration 3 of 20.</li>\n<li>A goal check alone (e.g., \"did the tests pass?\") says nothing about <em>why</em> the loop hasn't reached the goal yet, so a stuck loop and a slowly-progressing loop look identical until the ceiling hits.</li>\n<li>No termination logic at all means an interrupted API call, a misread tool result, or a genuinely unsolvable sub-task turns into an unattended loop that runs until something external kills it — a worker timeout, a budget alarm, or a human noticing the bill.</li>\n</ul>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Loop step completes\"] --> B{\"Goal check: is the task verifiably done?\"}\n    B -->|\"Yes\"| C[\"Terminate: success\"]\n    B -->|\"No\"| D{\"Iteration ceiling reached?\"}\n    D -->|\"Yes\"| E[\"Terminate: ceiling — return best-effort result or escalate\"]\n    D -->|\"No\"| F{\"No-progress signal tripped?\"}\n    F -->|\"Yes\"| G[\"Terminate: stalled — return best-effort result or escalate\"]\n    F -->|\"No\"| H[\"Continue: run next iteration\"]\n    H --> A\n</pre>\n<ol>\n<li><strong>Define the goal check first.</strong> Before writing any stop logic, define what \"done\" verifiably means for this loop — a passing test suite, a schema-valid output, an explicit user confirmation. A loop without a checkable goal cannot be terminated correctly; it can only be capped.</li>\n<li><strong>Set the iteration ceiling as a backstop, not the primary mechanism.</strong> Choose a ceiling generous enough for legitimate multi-step tasks but tight enough to bound worst-case cost and latency. This is a blunt instrument by design — it exists to guarantee the loop always ends, even if every smarter signal fails to trip.</li>\n<li><strong>Wire in a no-progress signal.</strong> Delegate this to the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/no-progress-detection/\">No-Progress Detection</a> pattern so the loop can exit before exhausting its ceiling when it has visibly stalled.</li>\n<li><strong>Evaluate all three signals after every iteration, in the same order:</strong> goal check, then ceiling, then no-progress. Checking the goal first means a loop that finishes early exits early, instead of an off-by-one condition on the ceiling forcing one wasted extra step.</li>\n<li><strong>Give every non-success exit a defined output.</strong> A loop that hits the ceiling or the no-progress signal should return its best available partial result, escalate to a human, or fail with a structured reason — never just stop silently.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>Any multi-step agent loop: ReAct-style tool-calling agents, autonomous coding agents, \"research until done\" pipelines, plan-execute-verify workflows.</li>\n<li>Loops where individual iterations are cheap enough that a token budget alone won't catch runaway iteration count.</li>\n<li>Production systems where unattended loops need a hard cost and latency ceiling regardless of how the loop is performing.</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Single-shot completions or fixed-length pipelines with a known, deterministic number of steps — there is no open-ended \"when do we stop\" question to answer.</li>\n<li>Loops that already run inside a durable orchestration framework (Temporal, Step Functions) with its own timeout and retry semantics — duplicate termination logic at both layers creates confusing, conflicting stop reasons.</li>\n<li>Extremely short loops (1-3 iterations) where the overhead of three-signal evaluation exceeds the cost of just letting the loop run to a hardcoded limit.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>False success risk</strong> — a goal check that's too permissive (e.g., \"the code compiles\" instead of \"the tests pass\") lets the loop terminate on a technically-met but practically wrong condition.</li>\n<li><strong>Ceiling tuning is task-specific</strong> — a ceiling right for a 3-file refactor is wrong for a 40-file migration; teams often need per-task-class ceilings rather than one global constant.</li>\n<li><strong>Escalation paths must exist</strong> — this pattern only decides <em>when</em> to stop; if there's no human-review or fallback path wired up for non-success exits, \"terminate and escalate\" silently becomes \"terminate and drop.\"</li>\n<li><strong>Added latency per iteration</strong> — running three checks after every step has a real, if small, cost; for very tight-loop tasks this can matter.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Ceiling Reached Before Goal, No Escalation Path</h3>\n<p><strong>Trigger</strong>: The loop hits its iteration ceiling on a genuinely hard task with no human-review or retry-with-more-budget path configured.\n<strong>Symptom</strong>: The system silently returns a partial, incorrect, or empty result and the caller has no signal that the loop was cut off rather than having completed successfully.\n<strong>Mitigation</strong>: Always tag the termination reason (<code>success</code>, <code>ceiling</code>, <code>stalled</code>, <code>error</code>) in the returned result, and require callers to branch on it explicitly rather than treating any returned value as a completed answer.</p>\n<h3>Goal Check Too Weak</h3>\n<p><strong>Trigger</strong>: The verifiable goal condition checks a proxy for success (e.g., \"no exception was thrown\") rather than the actual objective (e.g., \"the feature works as specified\").\n<strong>Symptom</strong>: The loop terminates with <code>success</code> on outputs that later turn out to be wrong, because the loop was never actually measuring the right thing.\n<strong>Mitigation</strong>: Treat the goal check itself as the highest-leverage part of this pattern — invest disproportionately in making it a real verifier (tests, schema validation, an independent grader) rather than a cheap proxy. See the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/\">Maker–Verifier Split</a> pattern for how to keep this check honest.</p>\n<h3>Iteration Miscounting</h3>\n<p><strong>Trigger</strong>: The system counts logical loop iterations differently from the underlying model calls (e.g., a single \"iteration\" internally retries a flaky tool call three times without incrementing the counter).\n<strong>Symptom</strong>: The loop runs far longer, and costs far more, than the configured ceiling implies.\n<strong>Mitigation</strong>: Increment the iteration counter at the single, unambiguous point where the loop decides \"take another step,\" not at every underlying API call.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass\nfrom enum import Enum\nfrom typing import Callable, Optional\n\n\nclass StopReason(Enum):\n    SUCCESS = \"success\"\n    CEILING = \"ceiling\"\n    STALLED = \"stalled\"\n    ERROR = \"error\"\n\n\n@dataclass\nclass LoopResult:\n    output: object\n    stop_reason: StopReason\n    iterations_used: int\n\n\ndef run_loop(\n    step_fn: Callable[[object], object],\n    initial_state: object,\n    goal_check: Callable[[object], bool],\n    no_progress_check: Callable[[list], bool],\n    max_iterations: int = 20,\n) -> LoopResult:\n    state = initial_state\n    history = [state]\n\n    for i in range(1, max_iterations + 1):\n        state = step_fn(state)\n        history.append(state)\n\n        if goal_check(state):\n            return LoopResult(state, StopReason.SUCCESS, i)\n\n        if no_progress_check(history):\n            return LoopResult(state, StopReason.STALLED, i)\n\n    return LoopResult(state, StopReason.CEILING, max_iterations)\n\n\n# Example goal check: task-specific verifier, not a cheap proxy\ndef goal_check(state: dict) -> bool:\n    return state.get(\"tests_passed\") is True\n\n\n# Delegated to the No-Progress Detection Pattern in production;\n# shown inline here for a minimal, runnable example\ndef no_progress_check(history: list, patience: int = 3) -> bool:\n    if len(history) &#x3C; patience + 1:\n        return False\n    recent = history[-patience:]\n    return all(r == recent[0] for r in recent)\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>LangChain / LangGraph</td><td>Framework</td><td><code>max_iterations</code> and custom graph exit conditions on <code>AgentExecutor</code> and <code>StateGraph</code></td></tr><tr><td>Temporal</td><td>Durable execution</td><td>Workflow-level timeouts and retry policies; often layered under application-level termination logic</td></tr><tr><td>AWS Step Functions</td><td>Durable execution</td><td>State-machine-level iteration limits (<code>MaxAttempts</code>, <code>Iterator</code> bounds)</td></tr><tr><td>Custom harnesses (e.g., \"Ralph Wiggum\"-style loops)</td><td>Pattern, not a product</td><td>Bare <code>while</code> loops around a coding agent with an external spec as the goal check</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/cost-and-efficiency/token-budget/\">Token Budget Pattern</a></strong> — bounds cost per request by token count; this pattern bounds the loop by iteration count and goal state, and the two are typically enforced together.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/reliability/circuit-breaker/\">Circuit Breaker for LLMs</a></strong> — protects against downstream failures across many requests; this pattern protects against a single loop running too long.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/no-progress-detection/\">No-Progress Detection</a></strong> — supplies the no-progress signal this pattern consumes.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/reflexion-loop/\">Reflexion Loop</a></strong> — a specific loop shape that this pattern's termination logic wraps around.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2210.03629\">ReAct: Synergizing Reasoning and Acting in Language Models (Yao et al., 2022)</a></li>\n<li><a href=\"https://happycapy.ai/blog/loop-engineering-ai-agents\">Loop Engineering for AI Agents — HappyCapy</a></li>\n<li><a href=\"https://www.mindstudio.ai/blog/what-is-loop-engineering-ai-coding-agents\">What Is Loop Engineering? — MindStudio</a></li>\n<li><a href=\"https://lushbinary.com/blog/loop-engineering-ai-coding-agents-guide/\">Loop Engineering: The Guide for AI Agents — Lushbinary</a></li>\n</ul>",
-    "toc": [
-      {
-        "title": "What It Is",
-        "url": "#what-it-is",
-        "items": []
-      },
-      {
-        "title": "The Problem It Solves",
-        "url": "#the-problem-it-solves",
-        "items": []
-      },
-      {
-        "title": "How It Works",
-        "url": "#how-it-works",
-        "items": []
-      },
-      {
-        "title": "When to Use It",
-        "url": "#when-to-use-it",
-        "items": []
-      },
-      {
-        "title": "When NOT to Use It",
-        "url": "#when-not-to-use-it",
-        "items": []
-      },
-      {
-        "title": "Trade-offs",
-        "url": "#trade-offs",
-        "items": []
-      },
-      {
-        "title": "Failure Modes",
-        "url": "#failure-modes",
-        "items": [
-          {
-            "title": "Ceiling Reached Before Goal, No Escalation Path",
-            "url": "#ceiling-reached-before-goal-no-escalation-path",
-            "items": []
-          },
-          {
-            "title": "Goal Check Too Weak",
-            "url": "#goal-check-too-weak",
-            "items": []
-          },
-          {
-            "title": "Iteration Miscounting",
-            "url": "#iteration-miscounting",
-            "items": []
-          }
-        ]
-      },
-      {
-        "title": "Implementation Example",
-        "url": "#implementation-example",
-        "items": []
-      },
-      {
-        "title": "Tool Landscape",
-        "url": "#tool-landscape",
-        "items": []
-      },
-      {
-        "title": "Related Patterns",
-        "url": "#related-patterns",
-        "items": []
-      },
-      {
-        "title": "Further Reading",
-        "url": "#further-reading",
-        "items": []
-      }
-    ]
-  },
-  {
-    "title": "Maker–Verifier Split",
-    "pillar": "loop-engineering",
+    "title": "Entity Resolution Graph",
+    "pillar": "graph-patterns",
     "status": "emerging",
     "tags": [
-      "loops",
-      "agents",
-      "verification",
-      "human-in-the-loop",
-      "control-flow"
+      "graph",
+      "entity-resolution",
+      "deduplication",
+      "data-quality",
+      "linking"
     ],
     "related": [
-      "Reflexion Loop",
-      "LLM-as-Judge",
-      "Loop Termination",
-      "Tool Output Firewall"
+      "GraphRAG",
+      "Data Contract Pattern"
     ],
-    "description": "Structurally separate the agent that does the work from the agent or process that certifies it's done, so \"done\" is an independent claim rather than the maker grading its own homework.",
+    "description": "Use graph-based approaches to deduplicate, link, and merge entity mentions across heterogeneous data sources into a unified knowledge graph.",
     "contributors": [
       "@PrajwalAmte"
     ],
-    "last_updated": "2026-07",
-    "sidebar": {
-      "order": 4
-    },
-    "slug": "loop-engineering/maker-verifier-split",
-    "body": "<h2>What It Is</h2>\n<p>The Maker–Verifier Split pattern structurally separates the agent producing work (the Maker) from the process that certifies the work is actually complete and correct (the Verifier). The two run as independent sub-agents, processes, or checks — never the same call, and ideally not even the same model configuration — so that a loop's \"it is done\" signal means something more than the Maker's own self-assessment.</p>\n<h2>The Problem It Solves</h2>\n<p>An unattended agent loop is also, by definition, an agent making mistakes unattended. If the same agent that produces an output is also the one deciding whether that output is good enough, the loop inherits every blind spot the Maker has: it will tend to approve outputs that satisfy its own (possibly wrong) understanding of the task, because it has no external check against that understanding. Concretely:</p>\n<ul>\n<li>A coding agent that \"reviews its own diff\" tends to approve patches that reflect its own misreading of the spec, since the same misreading produced both the patch and the review.</li>\n<li>A research agent that decides for itself when it has \"gathered enough sources\" tends to stop exactly when its own uncertainty happens to be low, which is not the same as when the research is actually sufficient.</li>\n<li>Without an independent verifier, a long-running loop's claim of \"done\" is unfalsifiable from inside the system — the only way to catch a wrong \"done\" is for a human to check the output after the fact, which defeats much of the point of running the loop unattended.</li>\n</ul>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">sequenceDiagram\n    participant M as Maker\n    participant V as Verifier\n    participant H as Human (escalation path)\n\n    M->>M: Produce attempt\n    M->>V: Submit output for verification\n    V->>V: Check against independent criteria (tests, schema, rubric, or separate model)\n    alt Verifier passes\n        V-->>M: Approved\n        M->>M: Terminate loop: success\n    else Verifier fails\n        V-->>M: Rejected + concrete reason\n        M->>M: Re-attempt using rejection reason\n    end\n    Note over M,V: If rejected N times or Verifier itself is uncertain\n    V->>H: Escalate for human judgment\n    H-->>M: Final decision\n</pre>\n<ol>\n<li><strong>Define the Verifier before building the Maker's loop.</strong> The Verifier's criteria should come from the task specification, not be reverse-engineered from what the Maker tends to produce — otherwise the Verifier ends up validating the Maker's habits rather than the actual requirement.</li>\n<li><strong>Keep the Verifier's inputs independent of the Maker's reasoning.</strong> The Verifier should check the <em>output</em> (does the code pass tests, does the data match the schema, does the answer satisfy the rubric) without access to the Maker's internal justification for why it believes the output is correct — access to that justification is exactly what lets a Verifier get talked into approving a flawed output.</li>\n<li><strong>Prefer mechanical verifiers over model-based ones where possible.</strong> A test suite, a schema validator, or a static analyzer cannot be persuaded; a second LLM call judging the first LLM's work can be, especially if both share training data, instruction-following habits, or blind spots.</li>\n<li><strong>When a model-based Verifier is unavoidable</strong>, use a genuinely different model, prompt, or vantage point than the Maker — grading the Maker's own reasoning trace with the Maker's own voice reproduces the self-certification problem this pattern exists to avoid.</li>\n<li><strong>Give rejections a concrete, actionable reason</strong>, not just pass/fail — this is what the Maker's next attempt (or a <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/reflexion-loop/\">Reflexion Loop</a>) uses to actually improve rather than re-guessing.</li>\n<li><strong>Wire an escalation path for Verifier uncertainty</strong>, not just Maker failure. A Verifier that itself can't confidently pass or fail an attempt after repeated tries should hand off to a human rather than defaulting to either approval or endless rejection.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>Autonomous or semi-autonomous loops running with limited human supervision, where a wrong \"done\" signal has real cost (shipped code, sent communications, executed transactions).</li>\n<li>Tasks where an independent, mechanical check exists or can be built (tests, schema validation, static analysis, a business-rule engine).</li>\n<li>Any loop pattern (Reflexion Loop, plan-execute-verify) that already needs an evaluator or goal check — this pattern is the design principle for how to make that check trustworthy.</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Low-stakes, easily-reversible tasks where a wrong \"done\" costs little and a human reviews the output anyway before it matters — the added architectural complexity isn't earning its cost.</li>\n<li>Tasks with no meaningful way to construct an independent verifier (deeply subjective creative work with no rubric) — forcing a Maker–Verifier split here just relocates the subjectivity into the Verifier's opinion, dressed up as independent verification.</li>\n<li>Extremely tight latency budgets where the two-hop Maker → Verifier round trip (and any escalation path) doesn't fit the SLA, and the task's stakes genuinely don't justify the added latency.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Verifier quality becomes the real bottleneck</strong> — a weak or gameable Verifier gives false confidence; the whole pattern is only as good as the independence and rigor of the check.</li>\n<li><strong>Added latency and cost</strong> — every attempt now costs a Maker call plus a Verifier call (and occasionally a human escalation), compared to a single self-assessed pass.</li>\n<li><strong>Building a good mechanical Verifier is itself engineering work</strong> — for many real tasks, \"does the code pass tests\" is easy to define, but \"does this research answer sufficiently address the question\" is not, and a weak proxy Verifier can be worse than an honest self-assessment.</li>\n<li><strong>Escalation paths need real ownership</strong> — an escalation queue that no human actually monitors turns \"escalate to human\" into a silent dead end, which is worse than the loop failing loudly.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Verifier Shares the Maker's Blind Spot</h3>\n<p><strong>Trigger</strong>: The Verifier is a model-based check using the same underlying model, similar prompting style, or the same misreading of the task spec as the Maker.\n<strong>Symptom</strong>: The Verifier approves outputs that reflect a shared misunderstanding, giving false confidence that independent verification occurred.\n<strong>Mitigation</strong>: Use mechanical checks (tests, schema validation) wherever the task allows; when a model-based Verifier is necessary, deliberately use a different model or a materially different prompt framing than the Maker.</p>\n<h3>Verifier Reverse-Engineered from Maker Output</h3>\n<p><strong>Trigger</strong>: The Verifier's criteria were written by observing what the Maker tends to produce, rather than derived from the original task specification.\n<strong>Symptom</strong>: The Verifier validates the Maker's habitual patterns rather than the actual requirement, and drifts further from the true spec as the Maker's habits evolve.\n<strong>Mitigation</strong>: Derive Verifier criteria from the task specification or acceptance criteria directly, and review them independently of any Maker output.</p>\n<h3>Silent Escalation Dead End</h3>\n<p><strong>Trigger</strong>: An escalation path to a human exists on paper (a queue, a ticket, a Slack channel) but nobody is actually monitoring it.\n<strong>Symptom</strong>: Attempts that should have been caught and reviewed instead sit unresolved indefinitely, and the loop either times out with no result or a downstream process treats the unresolved state as a default approval.\n<strong>Mitigation</strong>: Treat the escalation path as a monitored on-call responsibility with an SLA, not a fire-and-forget queue; alert on escalation backlog the same way you'd alert on any other production queue.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass\nfrom enum import Enum\nfrom typing import Callable, Optional\n\n\nclass VerifyStatus(Enum):\n    APPROVED = \"approved\"\n    REJECTED = \"rejected\"\n    UNCERTAIN = \"uncertain\"  # triggers human escalation\n\n\n@dataclass\nclass VerifyResult:\n    status: VerifyStatus\n    reason: str\n\n\ndef maker_verifier_loop(\n    task: str,\n    maker_fn: Callable[[str, list], object],\n    verifier_fn: Callable[[object], VerifyResult],\n    escalate_fn: Callable[[object, list], object],\n    max_attempts: int = 4,\n) -> dict:\n    rejection_reasons: list = []\n\n    for attempt in range(1, max_attempts + 1):\n        output = maker_fn(task, rejection_reasons)\n        result = verifier_fn(output)  # independent of maker_fn's reasoning\n\n        if result.status == VerifyStatus.APPROVED:\n            return {\"output\": output, \"status\": \"success\", \"attempts\": attempt}\n\n        if result.status == VerifyStatus.UNCERTAIN:\n            human_decision = escalate_fn(output, rejection_reasons)\n            return {\n                \"output\": human_decision,\n                \"status\": \"human_reviewed\",\n                \"attempts\": attempt,\n            }\n\n        rejection_reasons.append(result.reason)\n\n    # Exhausted attempts without approval — escalate rather than\n    # silently returning an unverified output\n    human_decision = escalate_fn(output, rejection_reasons)\n    return {\"output\": human_decision, \"status\": \"escalated_ceiling\", \"attempts\": max_attempts}\n\n\n# Example mechanical verifier: independent of the maker's reasoning trace\ndef verifier_fn(output: dict) -> VerifyResult:\n    if output.get(\"tests_passed\") is True:\n        return VerifyResult(VerifyStatus.APPROVED, \"all tests passed\")\n    if output.get(\"tests_run\", 0) == 0:\n        return VerifyResult(VerifyStatus.UNCERTAIN, \"no tests were executed\")\n    return VerifyResult(VerifyStatus.REJECTED, f\"failed: {output.get('failure_detail')}\")\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>Test runners (pytest, jest, go test)</td><td>General tooling</td><td>The most common mechanical Verifier for code-generation Makers</td></tr><tr><td>JSON Schema / Pydantic validators</td><td>Open-source</td><td>Mechanical Verifier for structured-output Makers</td></tr><tr><td>Static analyzers / linters</td><td>General tooling</td><td>Cheap, non-gameable Verifier layer that runs before more expensive checks</td></tr><tr><td>Human-review queues (Jira, Linear, custom escalation UIs)</td><td>General tooling</td><td>The escalation path for Verifier-uncertain cases; needs monitored ownership</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/reflexion-loop/\">Reflexion Loop</a></strong> — a loop shape where this pattern's principle (independent Evaluator) is directly applicable; Reflexion without a genuinely independent Evaluator degrades into self-certification.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/\">LLM-as-Judge</a></strong> — can serve as a model-based Verifier, provided it uses a different model or vantage point than the Maker.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a></strong> — the Verifier's pass/fail decision is typically one of the goal-check inputs to overall loop termination.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/security-and-trust/tool-output-firewall/\">Tool Output Firewall</a></strong> — a related separation-of-concerns pattern that sanitizes untrusted tool output re-entering context, similar in spirit to keeping the Verifier's inputs independent.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://lushbinary.com/blog/loop-engineering-ai-coding-agents-guide/\">Loop Engineering: The Guide for AI Agents — Lushbinary</a></li>\n<li><a href=\"https://github.com/cobusgreyling/loop-engineering\">GitHub: loop-engineering patterns and CLI tools — cobusgreyling</a></li>\n<li><a href=\"https://arxiv.org/abs/2303.11366\">Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)</a></li>\n</ul>",
-    "toc": [
-      {
-        "title": "What It Is",
-        "url": "#what-it-is",
-        "items": []
-      },
-      {
-        "title": "The Problem It Solves",
-        "url": "#the-problem-it-solves",
-        "items": []
-      },
-      {
-        "title": "How It Works",
-        "url": "#how-it-works",
-        "items": []
-      },
-      {
-        "title": "When to Use It",
-        "url": "#when-to-use-it",
-        "items": []
-      },
-      {
-        "title": "When NOT to Use It",
-        "url": "#when-not-to-use-it",
-        "items": []
-      },
-      {
-        "title": "Trade-offs",
-        "url": "#trade-offs",
-        "items": []
-      },
-      {
-        "title": "Failure Modes",
-        "url": "#failure-modes",
-        "items": [
-          {
-            "title": "Verifier Shares the Maker's Blind Spot",
-            "url": "#verifier-shares-the-makers-blind-spot",
-            "items": []
-          },
-          {
-            "title": "Verifier Reverse-Engineered from Maker Output",
-            "url": "#verifier-reverse-engineered-from-maker-output",
-            "items": []
-          },
-          {
-            "title": "Silent Escalation Dead End",
-            "url": "#silent-escalation-dead-end",
-            "items": []
-          }
-        ]
-      },
-      {
-        "title": "Implementation Example",
-        "url": "#implementation-example",
-        "items": []
-      },
-      {
-        "title": "Tool Landscape",
-        "url": "#tool-landscape",
-        "items": []
-      },
-      {
-        "title": "Related Patterns",
-        "url": "#related-patterns",
-        "items": []
-      },
-      {
-        "title": "Further Reading",
-        "url": "#further-reading",
-        "items": []
-      }
-    ]
-  },
-  {
-    "title": "No-Progress Detection",
-    "pillar": "loop-engineering",
-    "status": "emerging",
-    "tags": [
-      "loops",
-      "agents",
-      "convergence",
-      "oscillation",
-      "control-flow"
-    ],
-    "related": [
-      "Loop Termination",
-      "Reflexion Loop",
-      "Embedding Drift Detector"
-    ],
-    "description": "Detect stalled or oscillating agent loops by measuring the delta between successive iterations, so the loop can stop before exhausting its full iteration ceiling.",
-    "contributors": [
-      "@PrajwalAmte"
-    ],
-    "last_updated": "2026-07",
+    "last_updated": "2026-03",
     "sidebar": {
       "order": 3
     },
-    "slug": "loop-engineering/no-progress-detection",
-    "body": "<h2>What It Is</h2>\n<p>The No-Progress Detection pattern measures how much an agentic loop's state actually changes from one iteration to the next, and stops the loop early when that measurement shows a plateau (no meaningful change) or an oscillation (cycling between a small number of near-identical states) — rather than letting the loop run all the way to its iteration ceiling regardless of whether it's still making progress.</p>\n<h2>The Problem It Solves</h2>\n<p>An iteration ceiling guarantees a loop eventually stops, but it's a blunt instrument: it lets a loop burn its <em>entire</em> budget even when it visibly stopped improving several iterations earlier. Two specific failure shapes are common enough to name:</p>\n<ul>\n<li><strong>Plateau</strong>: the loop keeps producing output, but each successive attempt is functionally the same as the last — a coding agent that keeps \"fixing\" a bug with the identical patch, a research agent that keeps re-running the same query with cosmetic rewording.</li>\n<li><strong>Oscillation</strong>: the loop alternates between two (or a small cycle of) near-identical states without ever settling — an agent that alternates between two tool calls, or a Reflexion-style loop where the Self-Reflection step keeps \"correcting\" the Actor back and forth between two wrong answers.</li>\n</ul>\n<p>Both waste the remaining iteration budget and, in production, the added latency and cost of running to the ceiling rather than stopping the moment the stall is detectable.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Iteration completes, output added to history\"] --> B[\"Compute delta vs. recent history\"]\n    B --> C{\"Delta classification\"}\n    C -->|\"Improving\"| D[\"Continue loop\"]\n    C -->|\"Plateaued (delta ~0 for N iterations)\"| E[\"Terminate: stalled\"]\n    C -->|\"Oscillating (repeating cycle detected)\"| F[\"Terminate: stalled\"]\n    C -->|\"Regressing\"| G[\"Continue loop, but flag for review\"]\n</pre>\n<ol>\n<li><strong>Maintain a rolling history</strong> of the loop's output at each iteration — not the full context, just the state being evaluated for progress (a patch diff, a generated answer, a tool-call sequence).</li>\n<li><strong>Choose a delta metric appropriate to the task.</strong> Options include exact or near-exact match (cheap, works for plateau detection), edit distance or token-level diff (works for text), embedding cosine similarity (works for semantic drift), or task-specific signals like test-pass count (works best when available, since it measures actual progress rather than surface similarity).</li>\n<li><strong>Classify the trend</strong> after each iteration: <em>improving</em> (delta shows meaningful forward movement), <em>plateaued</em> (delta near zero for a patience window of N consecutive iterations), <em>oscillating</em> (the history repeats a short cycle of 2-3 states), or <em>regressing</em> (the task-specific signal is getting worse, not just unchanged).</li>\n<li><strong>Apply a patience window before terminating on plateau or oscillation</strong> — a single flat iteration is normal; only stop after the delta stays flat, or the cycle repeats, for a configured number of consecutive iterations.</li>\n<li><strong>On termination, return the best iteration seen so far</strong>, not necessarily the last one — especially important for oscillating loops, where the last state may not be the best of the cycle.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>Any bounded loop pattern (Reflexion Loop, iterative refinement, agent re-planning) where a measurable delta between iterations is available and cost or latency savings from stopping early matter.</li>\n<li>Loops that have previously been observed to oscillate or plateau in practice — this pattern is easiest to justify once you've seen the failure mode, harder to pre-emptively tune correctly.</li>\n<li>Systems where a task-specific progress signal already exists (test-pass count, retrieval-relevance score) that can be reused as the delta metric at near-zero extra cost.</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Tasks with no measurable delta between iterations, or where surface similarity is a poor proxy for actual progress (e.g., a long-form writing loop where two drafts can look textually similar but differ meaningfully in quality).</li>\n<li>Loops expected to have genuinely slow, incremental convergence, where several visually-similar iterations in a row are normal and expected rather than a sign of stalling — an aggressive patience window here causes false early stops.</li>\n<li>Situations where the cost of a false early stop (abandoning a task that was about to succeed) is much higher than the cost of a few wasted iterations — in that case, let the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a> pattern's iteration ceiling be the only backstop.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Metric choice is task-specific and can be wrong</strong> — a delta metric tuned for code diffs doesn't transfer to open-ended text generation, and a poorly chosen metric can either miss real stalls or flag false ones.</li>\n<li><strong>Patience window tuning</strong> — too short, and slow-but-real progress gets mistaken for a plateau; too long, and the pattern provides little savings over just running to the ceiling.</li>\n<li><strong>Added per-iteration compute</strong> — computing a delta (especially embedding-based) has a real cost, which needs to be weighed against the savings from stopping early.</li>\n<li><strong>Metric gaming</strong> — a loop can settle into an output that scores as \"improving\" on the chosen delta metric while making no real progress on the actual task, if the metric and the task diverge.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>False Plateau</h3>\n<p><strong>Trigger</strong>: The delta metric shows near-zero change between iterations, but the underlying content actually differs in a way that matters for the task (e.g., a one-line but critical fix that a text-similarity metric treats as a negligible edit).\n<strong>Symptom</strong>: The loop terminates as \"stalled\" just before it would have succeeded.\n<strong>Mitigation</strong>: Prefer task-specific progress signals (test-pass count, schema-validity score) over generic text similarity whenever one is available; reserve generic similarity metrics for cases with no better option.</p>\n<h3>Undetected Oscillation</h3>\n<p><strong>Trigger</strong>: The patience window or cycle-length check is too short to catch a 3-or-more-state oscillation cycle.\n<strong>Symptom</strong>: The loop keeps cycling and only stops when it eventually hits the iteration ceiling, defeating the purpose of this pattern.\n<strong>Mitigation</strong>: Check for repeating cycles of at least 2-4 states, not just exact-repeat-of-the-immediately-prior-state, and size the patience window to be at least twice the longest cycle length you expect to catch.</p>\n<h3>Metric-Task Mismatch</h3>\n<p><strong>Trigger</strong>: The chosen delta metric measures something correlated with, but not identical to, actual task progress.\n<strong>Symptom</strong>: The loop reports \"improving\" while the actual output quality is flat or worsening, or reports \"stalled\" on a loop that was genuinely progressing slowly.\n<strong>Mitigation</strong>: Validate the delta metric against a held-out set of known-good and known-stalled loop traces before relying on it in production; treat metric selection as itself requiring evaluation, not a one-time assumption.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass\nfrom typing import Callable, Optional\n\n\n@dataclass\nclass ProgressState:\n    history: list\n    patience: int = 3\n\n\ndef default_similarity(a: str, b: str) -> float:\n    # Minimal placeholder: word-overlap ratio. Replace with an\n    # embedding-based or task-specific metric in production.\n    words_a, words_b = set(a.split()), set(b.split())\n    if not words_a or not words_b:\n        return 0.0\n    return len(words_a &#x26; words_b) / len(words_a | words_b)\n\n\ndef detect_plateau(\n    history: list,\n    patience: int,\n    similarity_fn: Callable[[str, str], float] = default_similarity,\n    threshold: float = 0.95,\n) -> bool:\n    if len(history) &#x3C; patience + 1:\n        return False\n    window = history[-(patience + 1):]\n    return all(\n        similarity_fn(window[i], window[i + 1]) >= threshold\n        for i in range(len(window) - 1)\n    )\n\n\ndef detect_oscillation(history: list, max_cycle_length: int = 4) -> bool:\n    for cycle_len in range(2, max_cycle_length + 1):\n        if len(history) &#x3C; cycle_len * 2:\n            continue\n        recent = history[-cycle_len * 2:]\n        first_half, second_half = recent[:cycle_len], recent[cycle_len:]\n        if first_half == second_half:\n            return True\n    return False\n\n\ndef no_progress_check(history: list, patience: int = 3) -> Optional[str]:\n    if detect_oscillation(history):\n        return \"oscillating\"\n    if detect_plateau(history, patience):\n        return \"plateaued\"\n    return None\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>sentence-transformers / OpenAI embeddings</td><td>Embedding libraries</td><td>Common backbone for semantic delta scoring between iterations</td></tr><tr><td>difflib / Levenshtein libraries</td><td>Open-source</td><td>Cheap text-delta metrics for code diffs and short text</td></tr><tr><td>Custom task-specific scorers (test-pass count, schema validators)</td><td>Task-specific</td><td>Usually the highest-signal option when available; prefer these over generic similarity</td></tr><tr><td>LangGraph checkpoints</td><td>Framework</td><td>Can be inspected across steps to build a rolling history for delta computation</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a></strong> — this pattern supplies one of the three signals that Loop Termination consumes.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/reflexion-loop/\">Reflexion Loop</a></strong> — a common loop shape where oscillation between two corrected-and-re-broken states is a frequently observed failure.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/observability/embedding-drift-detector/\">Embedding Drift Detector</a></strong> — a related idea applied across time in production monitoring rather than within a single loop's iterations.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://agentshortlist.com/articles/loop-engineering\">Loop Engineering (2026): Self-Prompting AI Agent Patterns — Agent Shortlist</a></li>\n<li><a href=\"https://www.mindstudio.ai/blog/what-is-loop-engineering-ai-coding-agents\">What Is Loop Engineering? — MindStudio</a></li>\n<li><a href=\"https://arxiv.org/abs/2303.11366\">Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)</a></li>\n</ul>",
+    "slug": "graph-patterns/entity-resolution-graph",
+    "body": "<h2>What It Is</h2>\n<p>Entity Resolution Graph is a pattern that uses graph algorithms to identify, link, and merge mentions of the same real-world entity across multiple data sources. Instead of relying purely on string matching or embedding similarity, it models candidate matches as a graph and uses connectivity, transitivity, and community detection to make resolution decisions that individual pairwise comparisons miss.</p>\n<h2>The Problem It Solves</h2>\n<p>AI systems ingest data from many sources. The same entity (customer, product, location, concept) appears with different names, formats, and identifiers across sources:</p>\n<ul>\n<li>\"Microsoft Corp\", \"MSFT\", \"Microsoft Corporation\" in financial data.</li>\n<li>\"Dr. Jane Smith\", \"J. Smith\", \"<a href=\"mailto:jane.smith@hospital.org\">jane.smith@hospital.org</a>\" in medical records.</li>\n<li>\"GPT-4\", \"gpt-4-turbo\", \"OpenAI GPT4\" in technical documentation.</li>\n</ul>\n<p>Without resolution, knowledge graphs have duplicate nodes, RAG systems retrieve fragmented context, and analytics produce wrong counts. Pairwise matching alone fails because:</p>\n<ul>\n<li>It misses transitive links: A matches B, B matches C, but A does not directly match C.</li>\n<li>It cannot use graph structure: an entity connected to the same neighbors is likely the same entity even if names differ.</li>\n</ul>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Mentions from source A\"] --> D[\"Candidate generation (blocking)\"]\n    B[\"Mentions from source B\"] --> D\n    C[\"Mentions from source C\"] --> D\n    D --> E[\"Pairwise similarity scoring\"]\n    E --> F[\"Build resolution graph\"]\n    F --> G[\"Community detection / clustering\"]\n    G --> H[\"Merge cluster into canonical entities\"]\n    H --> I[\"Deduplicated entity store\"]\n</pre>\n<ol>\n<li><strong>Extract mentions</strong> — Pull entity mentions from each source with context (surrounding text, metadata, co-occurring entities).</li>\n<li><strong>Blocking</strong> — Create candidate pairs using cheap heuristics (same first letter, shared token, locality-sensitive hashing) to avoid O(n^2) comparisons.</li>\n<li><strong>Pairwise scoring</strong> — Score candidate pairs using string similarity (Jaro-Winkler, edit distance), embedding cosine similarity, or an LLM-based judge.</li>\n<li><strong>Build resolution graph</strong> — Create a graph where nodes are mentions and edges are scored similarities above a threshold.</li>\n<li><strong>Community detection</strong> — Run connected components, Louvain clustering, or label propagation to identify clusters of mentions that refer to the same entity.</li>\n<li><strong>Merge</strong> — For each cluster, select or synthesize a canonical entity record that combines the best attributes from all mentions.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>You are building a knowledge graph from multiple data sources and need deduplicated entities.</li>\n<li>Your RAG system retrieves fragmented and contradictory information about the same entity from different documents.</li>\n<li>Analytics or reporting requires accurate entity counts across heterogeneous sources.</li>\n<li>You have long-tail entities (niche products, internal tools, domain-specific terms) that embedding models have not seen.</li>\n</ul>\n<h2>When not to Use It</h2>\n<ul>\n<li>Entities have reliable unique identifiers across all sources (UUIDs, standardized codes). Simple join-on-ID is cheaper and more accurate.</li>\n<li>The entity space is small and manually curated. A lookup table or alias mapping is simpler and more maintainable.</li>\n<li>Real-time resolution is required. Graph-based approaches are batch-oriented. For real-time, use embedding-based nearest neighbor lookup.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Blocking quality</strong> — The blocking strategy determines recall. Aggressive blocking (more pairs) catches more matches but costs more compute. Conservative blocking misses matches.</li>\n<li><strong>Threshold sensitivity</strong> — The similarity threshold for creating graph edges controls precision/recall. Too low creates false links; too high misses valid ones.</li>\n<li><strong>Transitive errors</strong> — Graph-based approaches propagate errors: one bad edge can merge two unrelated entity clusters.</li>\n<li><strong>Maintenance cost</strong> — New data sources require re-running or incrementally updating the resolution pipeline.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Transitive Merge Cascade</h3>\n<p><strong>Trigger</strong>: A single incorrect edge links two unrelated entity clusters, and community detection merges them into one super-cluster.\n<strong>Symptom</strong>: Hundreds of unrelated entities share a canonical record. Downstream queries get nonsensical answers because the \"entity\" now represents multiple real-world things.\n<strong>Mitigation</strong>: Set a maximum cluster size threshold. Flag clusters that grow beyond expected bounds for manual review. Use edge confidence scores and remove low-confidence edges before community detection.</p>\n<h3>Blocking Function Misses Cross-Script Entities</h3>\n<p><strong>Trigger</strong>: The blocking function uses first-N characters or phonetic hashing, but entity mentions span multiple scripts or languages (\"München\" vs. \"Munich\").\n<strong>Symptom</strong>: Valid matches are never generated as candidate pairs because they fall into different blocks. Recall drops silently for multilingual corpora.\n<strong>Mitigation</strong>: Use embedding-based blocking that captures semantic similarity across languages. Add transliteration normalization before blocking.</p>\n<h3>Stale Canonical After New Source Ingestion</h3>\n<p><strong>Trigger</strong>: A new data source provides better-quality entity data than the original canonical, but the pipeline always preserves the first-seen canonical.\n<strong>Symptom</strong>: Canonical records remain low-quality even though superior data exists in the cluster. Retrieval surfaces the weaker representation.\n<strong>Mitigation</strong>: Re-evaluate canonical selection when new sources are added, using a quality scoring function (completeness, recency, source authority). Allow canonical promotion.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass, field\n\n\n@dataclass\nclass EntityMention:\n    mention_id: str\n    source: str\n    name: str\n    context: str = \"\"\n    attributes: dict = field(default_factory=dict)\n\n\ndef jaro_winkler_similarity(s1: str, s2: str) -> float:\n    if s1 == s2:\n        return 1.0\n    len1, len2 = len(s1), len(s2)\n    if len1 == 0 or len2 == 0:\n        return 0.0\n    match_distance = max(len1, len2) // 2 - 1\n    s1_matches = [False] * len1\n    s2_matches = [False] * len2\n    matches = 0\n    transpositions = 0\n\n    for i in range(len1):\n        start = max(0, i - match_distance)\n        end = min(i + match_distance + 1, len2)\n        for j in range(start, end):\n            if s2_matches[j] or s1[i] != s2[j]:\n                continue\n            s1_matches[i] = True\n            s2_matches[j] = True\n            matches += 1\n            break\n\n    if matches == 0:\n        return 0.0\n\n    k = 0\n    for i in range(len1):\n        if not s1_matches[i]:\n            continue\n        while not s2_matches[k]:\n            k += 1\n        if s1[i] != s2[k]:\n            transpositions += 1\n        k += 1\n\n    jaro = (\n        matches / len1 + matches / len2 + (matches - transpositions / 2) / matches\n    ) / 3\n    prefix_len = 0\n    for i in range(min(4, min(len1, len2))):\n        if s1[i] == s2[i]:\n            prefix_len += 1\n        else:\n            break\n\n    return jaro + prefix_len * 0.1 * (1 - jaro)\n\n\nclass ResolutionGraph:\n    def __init__(self, threshold: float = 0.85):\n        self._mentions: dict[str, EntityMention] = {}\n        self._edges: dict[str, list[tuple[str, float]]] = {}\n        self._threshold = threshold\n\n    def add_mention(self, mention: EntityMention) -> None:\n        self._mentions[mention.mention_id] = mention\n        self._edges[mention.mention_id] = []\n\n    def compute_similarities(self) -> None:\n        mention_ids = list(self._mentions.keys())\n        for i in range(len(mention_ids)):\n            for j in range(i + 1, len(mention_ids)):\n                m1 = self._mentions[mention_ids[i]]\n                m2 = self._mentions[mention_ids[j]]\n                sim = jaro_winkler_similarity(m1.name.lower(), m2.name.lower())\n                if sim >= self._threshold:\n                    self._edges[mention_ids[i]].append((mention_ids[j], sim))\n                    self._edges[mention_ids[j]].append((mention_ids[i], sim))\n\n    def find_clusters(self) -> list[set[str]]:\n        visited: set[str] = set()\n        clusters: list[set[str]] = []\n        for mention_id in self._mentions:\n            if mention_id in visited:\n                continue\n            cluster: set[str] = set()\n            queue = [mention_id]\n            while queue:\n                current = queue.pop(0)\n                if current in visited:\n                    continue\n                visited.add(current)\n                cluster.add(current)\n                for neighbor_id, _ in self._edges.get(current, []):\n                    if neighbor_id not in visited:\n                        queue.append(neighbor_id)\n            clusters.append(cluster)\n        return clusters\n\n    def resolve(self) -> list[dict]:\n        self.compute_similarities()\n        clusters = self.find_clusters()\n        resolved = []\n        for cluster in clusters:\n            mentions = [self._mentions[mid] for mid in cluster]\n            canonical = max(mentions, key=lambda m: len(m.name))\n            resolved.append({\n                \"canonical_name\": canonical.name,\n                \"sources\": list({m.source for m in mentions}),\n                \"mention_count\": len(mentions),\n                \"all_names\": list({m.name for m in mentions}),\n            })\n        return resolved\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>Dedupe</td><td>Open-source Python</td><td>Active learning based entity resolution with blocking</td></tr><tr><td>Senzing</td><td>Commercial</td><td>Real-time entity resolution engine with graph-based approach</td></tr><tr><td>Neo4j + GDS</td><td>Graph DB + library</td><td>Community detection algorithms (Louvain, WCC) on entity graphs</td></tr><tr><td>Splink</td><td>Open-source (UK Gov)</td><td>Probabilistic record linkage at scale with Spark support</td></tr><tr><td>LLM-based judge</td><td>Custom</td><td>Use LLM to score whether two mentions refer to the same entity</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/\">GraphRAG</a></strong> — A clean entity-resolved knowledge graph is the foundation for effective GraphRAG.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/data-patterns/data-contract/\">Data Contract Pattern</a></strong> — Data contracts can enforce entity ID standards that reduce the need for resolution.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2312.10714\">A Survey of Entity Resolution and Entity Matching</a></li>\n<li><a href=\"https://docs.dedupe.io/\">Dedupe Library Documentation</a></li>\n<li><a href=\"https://moj-analytical-services.github.io/splink/\">Splink: Probabilistic Record Linkage at Scale</a></li>\n</ul>",
     "toc": [
       {
         "title": "What It Is",
@@ -1774,7 +1273,7 @@
         "items": []
       },
       {
-        "title": "When NOT to Use It",
+        "title": "When not to Use It",
         "url": "#when-not-to-use-it",
         "items": []
       },
@@ -1788,18 +1287,18 @@
         "url": "#failure-modes",
         "items": [
           {
-            "title": "False Plateau",
-            "url": "#false-plateau",
+            "title": "Transitive Merge Cascade",
+            "url": "#transitive-merge-cascade",
             "items": []
           },
           {
-            "title": "Undetected Oscillation",
-            "url": "#undetected-oscillation",
+            "title": "Blocking Function Misses Cross-Script Entities",
+            "url": "#blocking-function-misses-cross-script-entities",
             "items": []
           },
           {
-            "title": "Metric-Task Mismatch",
-            "url": "#metric-task-mismatch",
+            "title": "Stale Canonical After New Source Ingestion",
+            "url": "#stale-canonical-after-new-source-ingestion",
             "items": []
           }
         ]
@@ -1827,32 +1326,30 @@
     ]
   },
   {
-    "title": "Reflexion Loop",
-    "pillar": "loop-engineering",
+    "title": "Graph of Thoughts",
+    "pillar": "graph-patterns",
     "status": "emerging",
     "tags": [
-      "loops",
-      "agents",
-      "self-correction",
-      "memory",
-      "reflection"
+      "reasoning",
+      "graph",
+      "multi-path",
+      "planning",
+      "llm"
     ],
     "related": [
-      "LLM-as-Judge",
-      "Loop Termination",
-      "Maker–Verifier Split",
-      "No-Progress Detection"
+      "GraphRAG",
+      "Entity Resolution Graph"
     ],
-    "description": "A three-role loop — Actor, Evaluator, Self-Reflection — where verbal lessons from failed attempts are written to episodic memory and read back on the next try.",
+    "description": "Structure LLM reasoning as a directed graph where thoughts branch, merge, and loop to solve complex problems that linear chains cannot.",
     "contributors": [
       "@PrajwalAmte"
     ],
-    "last_updated": "2026-07",
+    "last_updated": "2026-03",
     "sidebar": {
       "order": 2
     },
-    "slug": "loop-engineering/reflexion-loop",
-    "body": "<h2>What It Is</h2>\n<p>The Reflexion Loop pattern structures self-correction around three distinct roles rather than one model repeatedly re-answering the same prompt: an <strong>Actor</strong> that attempts the task, an <strong>Evaluator</strong> that scores the attempt, and a <strong>Self-Reflection</strong> step that converts a failure into a short verbal lesson, written to an episodic memory buffer that the Actor reads before its next attempt. The loop repeats until the Evaluator passes the attempt or a termination condition (see the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a> pattern) is met.</p>\n<h2>The Problem It Solves</h2>\n<p>Naively re-prompting a model with \"try again\" after a failure rarely produces a materially different attempt — the model has no structured record of <em>what specifically</em> went wrong last time, so it tends to repeat the same mistake with cosmetic variation. This shows up as:</p>\n<ul>\n<li>A coding agent re-generating a patch that fails the same test three times in a row, because nothing in its context distinguishes attempt 3 from attempt 1.</li>\n<li>A research agent re-running a failed query with slightly different wording instead of addressing the actual reason the previous result was insufficient.</li>\n<li>Wasted iteration budget: every retry costs the same as the first attempt, with no compounding benefit from having already failed once.</li>\n</ul>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Actor attempts task\"] --> B[\"Evaluator scores the attempt\"]\n    B --> C{\"Passed?\"}\n    C -->|\"Yes\"| D[\"Terminate: success, return output\"]\n    C -->|\"No\"| E[\"Self-Reflection step\"]\n    E --> F[\"Write verbal lesson to episodic memory\"]\n    F --> G{\"Termination condition met? (see Loop Termination Pattern)\"}\n    G -->|\"Yes\"| H[\"Terminate: exhausted, return best attempt + lessons\"]\n    G -->|\"No\"| I[\"Actor re-attempts, reading memory buffer\"]\n    I --> A\n</pre>\n<ol>\n<li><strong>Separate the three roles explicitly</strong>, even if all three are the same underlying model called with different prompts. Mixing them into a single \"critique yourself\" prompt collapses the distinction that makes this pattern work.</li>\n<li><strong>Actor attempts the task</strong> using the current prompt, tools, and whatever is in the episodic memory buffer from prior attempts.</li>\n<li><strong>Evaluator scores the attempt</strong> against an explicit, checkable criterion — ideally an external verifier (tests, schema validation, a rubric) rather than the Actor grading its own work. See the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/\">Maker–Verifier Split</a> pattern for why this separation matters.</li>\n<li><strong>On failure, the Self-Reflection step writes a short, specific, verbal lesson</strong> — not a full transcript replay, but a distilled statement of what went wrong and what to try differently (\"the patch failed because the import path assumed a flat module layout; the project uses a src/ layout\").</li>\n<li><strong>The lesson is appended to an episodic memory buffer</strong>, which the Actor reads on its next attempt alongside the original task. The buffer accumulates across attempts within a run, so attempt 4 has the accumulated lessons of attempts 1–3.</li>\n<li><strong>The loop terminates</strong> via the same signals as any other agent loop — a passing evaluation, an iteration ceiling, or a no-progress signal — since Reflexion loops can themselves stall if the lessons aren't actually actionable.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>Tasks with a cheap, reliable automated verifier: code generation with a test suite, structured data extraction with schema validation, agent tool-calling with a checkable success condition.</li>\n<li>Multi-attempt tasks where the <em>reason</em> for failure is specific and expressible in language (a wrong assumption, a missed constraint) rather than open-ended quality judgment.</li>\n<li>Situations where retry cost is acceptable (2-4x a single attempt) in exchange for meaningfully higher success rate on attempt 2+.</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Tasks without a reliable, independent evaluator — if the Evaluator is the same model with the same blind spots as the Actor, failures can go undetected and the loop terminates on a false pass. This is the single most common way this pattern fails silently.</li>\n<li>Latency-critical, real-time responses — the sequential Actor → Evaluator → Self-Reflection → Actor round trip adds meaningful latency that a single-pass response doesn't have.</li>\n<li>Open-ended creative tasks with no checkable success criterion (there is no test suite for \"is this poem good\") — a rubric-graded Evaluator here just becomes a matter of opinion dressed up as verification.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Cost multiplies</strong> — each failed attempt costs an Actor call, an Evaluator call, and a Self-Reflection call; a task needing 3 attempts costs roughly 3x a single-pass approach, sometimes more.</li>\n<li><strong>Evaluator quality is the ceiling on the whole pattern</strong> — a weak or biased Evaluator makes every other part of the loop worthless, since the Actor will happily converge on whatever the Evaluator rewards, not what's actually correct.</li>\n<li><strong>Verbal lessons can be wrong or overfit</strong> — the Self-Reflection step can misattribute the cause of failure, and the Actor then \"corrects\" for the wrong reason, sometimes making the next attempt worse.</li>\n<li><strong>Memory buffer growth</strong> — across many attempts, the accumulated lessons can grow large enough to compete for context budget with the task itself; this pattern needs to be paired with the <a href=\"/AI-Engineering-Patterns/patterns/cost-and-efficiency/token-budget/\">Token Budget Pattern</a> in long-running loops.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Rubber-Stamp Evaluation</h3>\n<p><strong>Trigger</strong>: The Evaluator is the same model instance (or same model with the same prompt style) as the Actor, effectively grading its own homework.\n<strong>Symptom</strong>: The loop terminates with a \"pass\" on outputs that an independent check would fail, because the Evaluator shares the Actor's blind spots.\n<strong>Mitigation</strong>: Use an independent verifier where possible (test execution, schema validators, a different model or a human) rather than a same-model self-critique. See the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/\">Maker–Verifier Split</a> pattern.</p>\n<h3>Misattributed Lesson</h3>\n<p><strong>Trigger</strong>: The Self-Reflection step identifies a plausible-sounding but incorrect cause for the failure.\n<strong>Symptom</strong>: Subsequent attempts \"fix\" the wrong thing, and the loop either stalls (no measurable improvement) or actively regresses.\n<strong>Mitigation</strong>: Ground the Self-Reflection step in concrete evaluator output (the actual failing test's error message, the actual schema validation error) rather than asking the model to freely speculate about why it failed.</p>\n<h3>Memory Buffer Bloat</h3>\n<p><strong>Trigger</strong>: Long-running loops accumulate many verbal lessons without pruning, and the buffer grows to consume a large fraction of the available context.\n<strong>Symptom</strong>: Later attempts have less room for the actual task context, and quality degrades even as the lesson buffer grows.\n<strong>Mitigation</strong>: Cap the buffer to the most recent and most relevant N lessons, or periodically summarize the buffer down to its essential, non-redundant points.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass, field\nfrom typing import Callable\n\n\n@dataclass\nclass EvalResult:\n    passed: bool\n    detail: str  # concrete failure detail, e.g. test error message\n\n\n@dataclass\nclass ReflexionState:\n    task: str\n    memory: list = field(default_factory=list)  # verbal lessons\n    last_output: object = None\n\n\ndef reflexion_loop(\n    task: str,\n    actor_fn: Callable[[str, list], object],\n    evaluator_fn: Callable[[object], EvalResult],\n    reflect_fn: Callable[[object, str], str],\n    max_attempts: int = 4,\n) -> ReflexionState:\n    state = ReflexionState(task=task)\n\n    for attempt in range(1, max_attempts + 1):\n        output = actor_fn(task, state.memory)\n        state.last_output = output\n\n        result = evaluator_fn(output)\n        if result.passed:\n            return state  # success — state.last_output is the answer\n\n        # Grounded in the evaluator's concrete failure detail,\n        # not free speculation\n        lesson = reflect_fn(output, result.detail)\n        state.memory.append(lesson)\n\n    return state  # exhausted — caller checks state.last_output + memory\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>Reflexion (research implementation)</td><td>Open-source (paper release)</td><td>Reference implementation of the Actor/Evaluator/Self-Reflection loop with episodic memory</td></tr><tr><td>LangGraph</td><td>Framework</td><td>Explicit multi-node graphs suited to modeling separate Actor/Evaluator/Reflection roles</td></tr><tr><td>DeepEval / RAGAS</td><td>Evaluation libraries</td><td>Can serve as the Evaluator role when the task has RAG- or generation-quality dimensions</td></tr><tr><td>Test runners (pytest, jest, etc.)</td><td>General tooling</td><td>The most reliable Evaluator for code-generation Reflexion loops</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/\">LLM-as-Judge</a></strong> — an offline evaluation harness; this pattern's Evaluator role can use LLM-as-Judge techniques, but Reflexion applies them inside a live retry loop rather than in batch evaluation.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a></strong> — supplies the stopping logic this pattern needs to avoid looping indefinitely on an unsolvable task.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/\">Maker–Verifier Split</a></strong> — the structural principle behind keeping the Evaluator independent of the Actor.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/no-progress-detection/\">No-Progress Detection</a></strong> — detects when successive Reflexion attempts stop improving, independent of hitting the attempt ceiling.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2303.11366\">Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)</a></li>\n<li><a href=\"https://arxiv.org/abs/2210.03629\">ReAct: Synergizing Reasoning and Acting in Language Models (Yao et al., 2022)</a></li>\n<li><a href=\"https://tosea.ai/blog/loop-engineering-ai-agents-complete-guide-2026\">What Is Loop Engineering? A Complete Guide from Prompt to Harness Engineering — Tosea.ai</a></li>\n</ul>",
+    "slug": "graph-patterns/graph-of-thoughts",
+    "body": "<h2>What It Is</h2>\n<p>Graph of Thoughts (GoT) structures LLM reasoning as a directed graph rather than a linear chain. Each node is a partial solution or reasoning step. Edges represent transformations — refinement, aggregation, or branching. This allows the model to explore multiple approaches in parallel, merge the best parts, and iteratively refine, producing higher-quality outputs for complex multi-step problems.</p>\n<h2>The Problem It Solves</h2>\n<p>Chain-of-thought (CoT) prompting produces a single linear chain of reasoning. If the model makes a wrong step early, the entire chain follows the wrong path. There is no backtracking, no parallel exploration, and no way to combine partial solutions from different approaches.</p>\n<ul>\n<li><strong>Sorting a list</strong>: CoT must process linearly. GoT can split the list, sort sub-lists in parallel, and merge.</li>\n<li><strong>Writing code</strong>: CoT generates one solution. GoT can explore multiple approaches, evaluate each, and combine the best elements.</li>\n<li><strong>Planning</strong>: CoT commits to one plan. GoT can maintain multiple plan branches and converge on the strongest.</li>\n</ul>\n<p>Linear reasoning is a bottleneck for problems that benefit from divide-and-conquer, parallel exploration, or iterative refinement.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Initial problem\"] --> B[\"Decompose into reasoning branches\"]\n    B --> C1[\"Branch A: generate partial solution\"]\n    B --> C2[\"Branch B: generate partial solution\"]\n    B --> C3[\"Branch C: generate partial solution\"]\n    C1 --> D1[\"Score A\"]\n    C2 --> D2[\"Score B\"]\n    C3 --> D3[\"Score C\"]\n    D1 --> E[\"Aggregate strongest branches\"]\n    D2 --> E\n    D3 --> E\n    E --> F[\"Refine merged result\"]\n    F --> G{\"Quality threshold met?\"}\n    G -->|\"No\"| B\n    G -->|\"Yes\"| H[\"Final answer\"]\n</pre>\n<ol>\n<li><strong>Decompose</strong> — Break the problem into sub-problems or generate alternative approaches.</li>\n<li><strong>Generate</strong> — For each branch, produce a partial solution using the LLM.</li>\n<li><strong>Score</strong> — Evaluate each branch using the LLM as a judge or an external evaluator.</li>\n<li><strong>Aggregate</strong> — Merge the best branches. Aggregation can be simple selection, weighted combination, or LLM-driven synthesis.</li>\n<li><strong>Refine</strong> — Pass the aggregated result through one or more refinement steps.</li>\n<li><strong>Repeat</strong> — Loop until a quality threshold is met or a fixed number of iterations complete.</li>\n</ol>\n<p>The graph is constructed programmatically by an orchestrator, not by the LLM itself. The LLM is called at each node for generation, scoring, and aggregation.</p>\n<h2>When to Use It</h2>\n<ul>\n<li>Problems that are naturally decomposable into independent sub-problems (sorting, code generation, document analysis).</li>\n<li>Tasks where exploring multiple approaches and picking the best yields significantly better results than a single linear attempt.</li>\n<li>Scenarios where partial solutions from different approaches can be meaningfully combined.</li>\n<li>Quality-critical tasks where the cost of multiple LLM calls is justified by output quality improvement.</li>\n</ul>\n<h2>When not to Use It</h2>\n<ul>\n<li>Simple questions with single-step answers. The overhead of graph construction and multiple LLM calls is not justified.</li>\n<li>Latency-sensitive requests. GoT requires multiple sequential and parallel LLM calls, which adds significant latency.</li>\n<li>Tasks where the LLM already achieves near-perfect accuracy with a single call or simple CoT.</li>\n<li>When budget constraints prevent the 3-10x token cost increase over a single call.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Token cost</strong> — GoT uses 3-10x more tokens than a single LLM call due to branching, scoring, and aggregation. Each node is a separate inference call.</li>\n<li><strong>Latency</strong> — Even with parallel branch execution, the sequential depth of the graph (decompose, generate, score, merge, refine) adds significant latency.</li>\n<li><strong>Orchestration complexity</strong> — Building the graph, managing state, handling failures at individual nodes, and implementing the scoring/aggregation logic requires substantial engineering.</li>\n<li><strong>Diminishing returns</strong> — For many tasks, Tree-of-Thought or even simple best-of-N sampling achieves most of GoT's quality improvement at lower complexity.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Scoring Function Misalignment</h3>\n<p><strong>Trigger</strong>: The scoring LLM evaluates thought nodes on surface-level quality (fluency, length) rather than logical correctness.\n<strong>Symptom</strong>: The graph selects confidently wrong branches over tentative but correct ones. Final merged output inherits errors from the highest-scored (but incorrect) paths.\n<strong>Mitigation</strong>: Design scoring prompts that explicitly evaluate factual accuracy and logical consistency, not just prose quality. Validate the scorer against a held-out set of known-correct and known-incorrect intermediate steps.</p>\n<h3>Merge Step Drops Key Information</h3>\n<p><strong>Trigger</strong>: The aggregation prompt that merges solutions from multiple branches has a limited context window and must summarize.\n<strong>Symptom</strong>: Critical details from individual branches are lost during merging. The final answer is syntactically coherent but missing nuances that individual branches captured.\n<strong>Mitigation</strong>: Use structured extraction from each branch before merging (key claims, numerical results, constraints). Merge from structured data, not raw text.</p>\n<h3>Decomposition Explosion</h3>\n<p><strong>Trigger</strong>: The decomposition step splits a problem into too many sub-problems, each of which branches further.\n<strong>Symptom</strong>: Token costs and latency grow exponentially. Many branches explore trivial or redundant variations. Most of the compute is wasted.\n<strong>Mitigation</strong>: Limit branching factor and graph depth. Score sub-problems for independence — discard those that are redundant or trivially solvable. Set a total token budget for the entire GoT execution.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass, field\nfrom enum import Enum\n\n\nclass NodeType(Enum):\n    GENERATE = \"generate\"\n    SCORE = \"score\"\n    AGGREGATE = \"aggregate\"\n    REFINE = \"refine\"\n\n\n@dataclass\nclass ThoughtNode:\n    node_id: str\n    node_type: NodeType\n    content: str = \"\"\n    score: float = 0.0\n    children: list[str] = field(default_factory=list)\n    parents: list[str] = field(default_factory=list)\n\n\nclass GraphOfThoughts:\n    def __init__(self):\n        self._nodes: dict[str, ThoughtNode] = {}\n        self._counter = 0\n\n    def _next_id(self) -> str:\n        self._counter += 1\n        return f\"node_{self._counter}\"\n\n    def add_thought(\n        self,\n        node_type: NodeType,\n        content: str,\n        parents: list[str] | None = None,\n    ) -> str:\n        node_id = self._next_id()\n        node = ThoughtNode(\n            node_id=node_id,\n            node_type=node_type,\n            content=content,\n            parents=parents or [],\n        )\n        self._nodes[node_id] = node\n        for parent_id in node.parents:\n            if parent_id in self._nodes:\n                self._nodes[parent_id].children.append(node_id)\n        return node_id\n\n    def score_node(self, node_id: str, score: float) -> None:\n        self._nodes[node_id].score = score\n\n    def get_top_branches(self, node_ids: list[str], k: int = 2) -> list[str]:\n        scored = [(nid, self._nodes[nid].score) for nid in node_ids]\n        scored.sort(key=lambda x: x[1], reverse=True)\n        return [nid for nid, _ in scored[:k]]\n\n    def get_node(self, node_id: str) -> ThoughtNode:\n        return self._nodes[node_id]\n\n\ndef solve_with_got(problem: str, num_branches: int = 3) -> str:\n    graph = GraphOfThoughts()\n    root = graph.add_thought(NodeType.GENERATE, problem)\n\n    branch_ids = []\n    for i in range(num_branches):\n        branch_content = f\"Approach {i + 1} for: {problem}\"\n        bid = graph.add_thought(NodeType.GENERATE, branch_content, [root])\n        graph.score_node(bid, evaluate_branch(branch_content))\n        branch_ids.append(bid)\n\n    top_ids = graph.get_top_branches(branch_ids, k=2)\n    top_contents = [graph.get_node(nid).content for nid in top_ids]\n    merged = f\"Combined solution from: {'; '.join(top_contents)}\"\n    merge_id = graph.add_thought(NodeType.AGGREGATE, merged, top_ids)\n\n    refined = f\"Refined: {merged}\"\n    graph.add_thought(NodeType.REFINE, refined, [merge_id])\n    return refined\n\n\ndef evaluate_branch(content: str) -> float:\n    return len(content) / 100.0\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>LangGraph</td><td>Framework</td><td>Arbitrary graph-based LLM workflows with state management</td></tr><tr><td>Microsoft AutoGen</td><td>Multi-agent framework</td><td>Supports branching conversation patterns between agents</td></tr><tr><td>DSPy</td><td>Optimization framework</td><td>Composable modules that can implement GoT-style pipelines</td></tr><tr><td>Custom orchestrator</td><td>DIY</td><td>Most GoT implementations are bespoke due to problem-specific graph structures</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/\">GraphRAG</a></strong> — Graph structure for retrieval context. GoT is graph structure for reasoning.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/entity-resolution-graph/\">Entity Resolution Graph</a></strong> — Complementary graph pattern focused on data quality rather than reasoning.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2308.09687\">Graph of Thoughts: Solving Elaborate Problems with Large Language Models</a></li>\n<li><a href=\"https://arxiv.org/abs/2404.15676\">Beyond Chain-of-Thought: A Survey of Chain-of-X Paradigms</a></li>\n<li><a href=\"https://langchain-ai.github.io/langgraph/\">LangGraph Documentation</a></li>\n</ul>",
     "toc": [
       {
         "title": "What It Is",
@@ -1875,7 +1372,7 @@
         "items": []
       },
       {
-        "title": "When NOT to Use It",
+        "title": "When not to Use It",
         "url": "#when-not-to-use-it",
         "items": []
       },
@@ -1889,18 +1386,118 @@
         "url": "#failure-modes",
         "items": [
           {
-            "title": "Rubber-Stamp Evaluation",
-            "url": "#rubber-stamp-evaluation",
+            "title": "Scoring Function Misalignment",
+            "url": "#scoring-function-misalignment",
             "items": []
           },
           {
-            "title": "Misattributed Lesson",
-            "url": "#misattributed-lesson",
+            "title": "Merge Step Drops Key Information",
+            "url": "#merge-step-drops-key-information",
             "items": []
           },
           {
-            "title": "Memory Buffer Bloat",
-            "url": "#memory-buffer-bloat",
+            "title": "Decomposition Explosion",
+            "url": "#decomposition-explosion",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Implementation Example",
+        "url": "#implementation-example",
+        "items": []
+      },
+      {
+        "title": "Tool Landscape",
+        "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Related Patterns",
+        "url": "#related-patterns",
+        "items": []
+      },
+      {
+        "title": "Further Reading",
+        "url": "#further-reading",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "GraphRAG",
+    "pillar": "graph-patterns",
+    "status": "validated-in-production",
+    "tags": [
+      "graph",
+      "rag",
+      "knowledge-graph",
+      "retrieval",
+      "multi-hop"
+    ],
+    "related": [
+      "Hybrid Search",
+      "Entity Resolution Graph",
+      "Graph of Thoughts"
+    ],
+    "description": "Augment RAG with knowledge graphs for multi-hop reasoning, entity relationships, and structured context that vector search alone cannot provide.",
+    "contributors": [
+      "@PrajwalAmte"
+    ],
+    "last_updated": "2026-03",
+    "sidebar": {
+      "order": 1
+    },
+    "slug": "graph-patterns/graph-rag",
+    "body": "<h2>What It Is</h2>\n<p>GraphRAG combines traditional vector-based retrieval with a knowledge graph to provide structured, relationship-aware context to LLMs. Instead of retrieving isolated text chunks, GraphRAG traverses entity relationships in a graph to assemble context that spans multiple documents and captures how concepts connect.</p>\n<h2>The Problem It Solves</h2>\n<p>Standard RAG retrieves chunks of text that are semantically similar to the query. This works for factual lookups but breaks down when the answer requires connecting information across multiple documents or understanding relationships between entities.</p>\n<ul>\n<li>\"Which team members have worked on projects that use the same technology stack?\" requires joining person-project-technology relationships.</li>\n<li>\"What are the downstream effects of deprecating Service X?\" requires traversing a dependency graph.</li>\n<li>\"Compare the approaches used by Team A and Team B for authentication\" requires pulling and connecting information from separate sources.</li>\n</ul>\n<p>Vector similarity alone cannot express graph traversals, joins, or multi-hop reasoning.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"User query\"] --> B[\"Entity extraction\"]\n    A --> C[\"Vector retrieval\"]\n    B --> D[\"Knowledge graph traversal\"]\n    D --> E[\"Graph facts and relationships\"]\n    C --> F[\"Unstructured passages\"]\n    E --> G[\"Context assembly\"]\n    F --> G\n    G --> H[\"LLM generation\"]\n    H --> I[\"Answer\"]\n</pre>\n<ol>\n<li><strong>Entity extraction</strong> — Extract entities and intent from the query using NER or an LLM.</li>\n<li><strong>Graph traversal</strong> — Look up extracted entities in the knowledge graph and traverse relationships to gather structured context (neighbors, paths, subgraphs).</li>\n<li><strong>Vector retrieval</strong> — Run standard embedding search in parallel for unstructured context.</li>\n<li><strong>Context assembly</strong> — Merge graph-derived facts (entity properties, relationships, paths) with vector-retrieved passages into a structured prompt.</li>\n<li><strong>Generation</strong> — Send the enriched context to the LLM for answer generation.</li>\n</ol>\n<p>The knowledge graph can be prebuilt from documents using an entity extraction pipeline, or maintained as a curated knowledge base.</p>\n<h2>When to Use It</h2>\n<ul>\n<li>Queries frequently require connecting information across multiple documents.</li>\n<li>Your domain has clear entity relationships (org charts, dependency maps, product catalogs, medical knowledge bases).</li>\n<li>Users ask comparative, relational, or multi-hop questions.</li>\n<li>You need explainable retrieval — the graph traversal path shows why certain context was included.</li>\n<li>Standard RAG recall is poor for relationship queries despite good chunk quality.</li>\n</ul>\n<h2>When not to Use It</h2>\n<ul>\n<li>Queries are simple factual lookups that vector search handles well. GraphRAG adds significant complexity for marginal improvement on single-hop questions.</li>\n<li>You do not have clean, structured data to build a knowledge graph from. Garbage-in-garbage-out applies even more to graphs than to vector stores.</li>\n<li>The knowledge base changes so frequently that maintaining a graph is impractical. Graph construction and updates are expensive.</li>\n<li>Your team cannot invest in graph infrastructure (Neo4j, Neptune, or similar) and the associated operational overhead.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Graph construction cost</strong> — Building and maintaining a knowledge graph from unstructured documents requires an entity extraction pipeline, which introduces its own error rate and latency.</li>\n<li><strong>Query routing complexity</strong> — Not every query benefits from graph traversal. You need a router to decide when to activate the graph path vs. pure vector retrieval.</li>\n<li><strong>Staleness risk</strong> — The knowledge graph can drift from source documents if the extraction pipeline is not run on every update.</li>\n<li><strong>Infrastructure overhead</strong> — Requires a graph database in addition to the vector store. Two systems to maintain, monitor, and back up.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Entity Extraction Hallucination</h3>\n<p><strong>Trigger</strong>: The extraction pipeline (often an LLM) hallucinates entities or relationships during knowledge graph construction.\n<strong>Symptom</strong>: The graph contains phantom nodes and edges. Queries that traverse these edges return confident but fabricated answers grounded in non-existent relationships.\n<strong>Mitigation</strong>: Validate extracted triples against source documents. Use extraction confidence scores and discard low-confidence triples. Periodically audit random graph subsets.</p>\n<h3>Over-Traversal on Vague Queries</h3>\n<p><strong>Trigger</strong>: A broad or ambiguous query causes the graph traversal to fan out through many hops, pulling in loosely related context.\n<strong>Symptom</strong>: Context window fills with tangentially related graph output. The LLM produces verbose, unfocused answers. Latency spikes from deep traversal.\n<strong>Mitigation</strong>: Set a maximum traversal depth and node limit per query. Score relevance at each hop and prune low-relevance paths. Fall back to vector search for queries that do not map cleanly to entity lookups.</p>\n<h3>Graph Staleness After Source Update</h3>\n<p><strong>Trigger</strong>: Source documents are updated but the knowledge graph extraction pipeline runs on a schedule (daily, weekly) rather than in real-time.\n<strong>Symptom</strong>: Graph contains outdated relationships. A vector search might return updated content, but the graph path retrieves stale context, creating contradictions in the prompt.\n<strong>Mitigation</strong>: Track source document versions in graph metadata. Flag graph nodes whose source has been modified since extraction. Prioritize re-extraction of flagged subgraphs.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass, field\n\n\n@dataclass\nclass Entity:\n    name: str\n    entity_type: str\n    properties: dict = field(default_factory=dict)\n\n\n@dataclass\nclass Relationship:\n    source: str\n    target: str\n    relation_type: str\n    properties: dict = field(default_factory=dict)\n\n\nclass KnowledgeGraph:\n    def __init__(self):\n        self._entities: dict[str, Entity] = {}\n        self._adjacency: dict[str, list[Relationship]] = {}\n\n    def add_entity(self, entity: Entity) -> None:\n        self._entities[entity.name] = entity\n        if entity.name not in self._adjacency:\n            self._adjacency[entity.name] = []\n\n    def add_relationship(self, rel: Relationship) -> None:\n        if rel.source not in self._adjacency:\n            self._adjacency[rel.source] = []\n        self._adjacency[rel.source].append(rel)\n\n    def get_neighbors(self, entity_name: str, max_depth: int = 2) -> list[dict]:\n        visited: set[str] = set()\n        results: list[dict] = []\n        queue: list[tuple[str, int]] = [(entity_name, 0)]\n\n        while queue:\n            current, depth = queue.pop(0)\n            if current in visited or depth > max_depth:\n                continue\n            visited.add(current)\n\n            for rel in self._adjacency.get(current, []):\n                results.append({\n                    \"source\": current,\n                    \"relation\": rel.relation_type,\n                    \"target\": rel.target,\n                    \"depth\": depth,\n                })\n                if rel.target not in visited:\n                    queue.append((rel.target, depth + 1))\n\n        return results\n\n    def get_entity(self, name: str) -> Entity | None:\n        return self._entities.get(name)\n\n\ndef extract_entities(query: str) -> list[str]:\n    return [token for token in query.split() if token[0].isupper()]\n\n\ndef build_graph_context(\n    graph: KnowledgeGraph,\n    entities: list[str],\n    max_depth: int = 2,\n) -> str:\n    context_lines = []\n    for entity_name in entities:\n        entity = graph.get_entity(entity_name)\n        if not entity:\n            continue\n        context_lines.append(f\"Entity: {entity.name} ({entity.entity_type})\")\n        neighbors = graph.get_neighbors(entity_name, max_depth)\n        for rel in neighbors:\n            context_lines.append(\n                f\"  {rel['source']} --[{rel['relation']}]--> {rel['target']}\"\n            )\n    return \"\\n\".join(context_lines)\n\n\ndef graph_rag_query(\n    query: str,\n    graph: KnowledgeGraph,\n    vector_results: list[str],\n) -> str:\n    entities = extract_entities(query)\n    graph_context = build_graph_context(graph, entities)\n    vector_context = \"\\n\".join(vector_results)\n    prompt = (\n        f\"Answer the following question using the provided context.\\n\\n\"\n        f\"Graph Context (entity relationships):\\n{graph_context}\\n\\n\"\n        f\"Document Context (retrieved passages):\\n{vector_context}\\n\\n\"\n        f\"Question: {query}\"\n    )\n    return prompt\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>Neo4j + LangChain</td><td>Graph DB + framework</td><td>Native Cypher queries combined with LLM chains</td></tr><tr><td>Microsoft GraphRAG</td><td>Open-source library</td><td>Builds community summaries from documents, designed for global queries</td></tr><tr><td>Amazon Neptune</td><td>Managed graph DB</td><td>Enterprise-grade, integrates with AWS Bedrock for LLM</td></tr><tr><td>FalkorDB</td><td>Open-source graph DB</td><td>Low-latency graph queries optimized for RAG workloads</td></tr><tr><td>LlamaIndex Knowledge Graph</td><td>Framework</td><td>Property graph index with automatic entity extraction</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/retrieval-and-memory/hybrid-search/\">Hybrid Search</a></strong> — Combine with GraphRAG for both semantic and structural retrieval.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/entity-resolution-graph/\">Entity Resolution Graph</a></strong> — Clean entity data is a prerequisite for a useful knowledge graph.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/graph-patterns/graph-of-thoughts/\">Graph of Thoughts</a></strong> — Graph reasoning at inference time complements graph-structured retrieval.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2404.16130\">Microsoft GraphRAG Paper</a></li>\n<li><a href=\"https://www.microsoft.com/en-us/research/blog/graphrag-unlocking-llm-discovery-on-narrative-private-data/\">GraphRAG: Unlocking LLM Discovery on Narrative Private Data</a></li>\n<li><a href=\"https://neo4j.com/docs/neo4j-graphrag-python/current/\">Neo4j GraphRAG Python Package</a></li>\n</ul>",
+    "toc": [
+      {
+        "title": "What It Is",
+        "url": "#what-it-is",
+        "items": []
+      },
+      {
+        "title": "The Problem It Solves",
+        "url": "#the-problem-it-solves",
+        "items": []
+      },
+      {
+        "title": "How It Works",
+        "url": "#how-it-works",
+        "items": []
+      },
+      {
+        "title": "When to Use It",
+        "url": "#when-to-use-it",
+        "items": []
+      },
+      {
+        "title": "When not to Use It",
+        "url": "#when-not-to-use-it",
+        "items": []
+      },
+      {
+        "title": "Trade-offs",
+        "url": "#trade-offs",
+        "items": []
+      },
+      {
+        "title": "Failure Modes",
+        "url": "#failure-modes",
+        "items": [
+          {
+            "title": "Entity Extraction Hallucination",
+            "url": "#entity-extraction-hallucination",
+            "items": []
+          },
+          {
+            "title": "Over-Traversal on Vague Queries",
+            "url": "#over-traversal-on-vague-queries",
+            "items": []
+          },
+          {
+            "title": "Graph Staleness After Source Update",
+            "url": "#graph-staleness-after-source-update",
             "items": []
           }
         ]
@@ -2357,6 +1954,409 @@
       {
         "title": "Tool Landscape",
         "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Further Reading",
+        "url": "#further-reading",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "Loop Termination",
+    "pillar": "loop-engineering",
+    "status": "validated-in-production",
+    "tags": [
+      "loops",
+      "agents",
+      "termination",
+      "iteration",
+      "control-flow"
+    ],
+    "related": [
+      "Token Budget Pattern",
+      "Circuit Breaker for LLMs",
+      "No-Progress Detection",
+      "Reflexion Loop"
+    ],
+    "description": "A composite stop-decision — iteration ceiling, goal verification, and no-progress signal — that runs after every step of an agentic loop so it stops for the right reason.",
+    "contributors": [
+      "@PrajwalAmte"
+    ],
+    "last_updated": "2026-07",
+    "sidebar": {
+      "order": 1
+    },
+    "slug": "loop-engineering/loop-termination",
+    "body": "<h2>What It Is</h2>\n<p>The Loop Termination pattern is a single stop-decision function that an agentic loop (reason-act-observe, plan-execute-verify, or any \"keep going until done\" agent) consults after every step. It combines three independent signals — an iteration ceiling, a goal-verification check, and a no-progress signal — into one gate, rather than relying on any single condition to catch every way a loop can go wrong.</p>\n<h2>The Problem It Solves</h2>\n<p>An agent loop has no natural end unless one is designed in. Left with only one stopping condition, loops fail in predictable ways:</p>\n<ul>\n<li>A token budget alone doesn't catch a loop making many small, cheap calls that never converge — each iteration is inexpensive, so the loop can run for hours without tripping a cost limit.</li>\n<li>An iteration ceiling alone stops the loop eventually, but only after burning the full ceiling even when the agent stalled at iteration 3 of 20.</li>\n<li>A goal check alone (e.g., \"did the tests pass?\") says nothing about <em>why</em> the loop hasn't reached the goal yet, so a stuck loop and a slowly-progressing loop look identical until the ceiling hits.</li>\n<li>No termination logic at all means an interrupted API call, a misread tool result, or a genuinely unsolvable sub-task turns into an unattended loop that runs until something external kills it — a worker timeout, a budget alarm, or a human noticing the bill.</li>\n</ul>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Loop step completes\"] --> B{\"Goal check: is the task verifiably done?\"}\n    B -->|\"Yes\"| C[\"Terminate: success\"]\n    B -->|\"No\"| D{\"Iteration ceiling reached?\"}\n    D -->|\"Yes\"| E[\"Terminate: ceiling — return best-effort result or escalate\"]\n    D -->|\"No\"| F{\"No-progress signal tripped?\"}\n    F -->|\"Yes\"| G[\"Terminate: stalled — return best-effort result or escalate\"]\n    F -->|\"No\"| H[\"Continue: run next iteration\"]\n    H --> A\n</pre>\n<ol>\n<li><strong>Define the goal check first.</strong> Before writing any stop logic, define what \"done\" verifiably means for this loop — a passing test suite, a schema-valid output, an explicit user confirmation. A loop without a checkable goal cannot be terminated correctly; it can only be capped.</li>\n<li><strong>Set the iteration ceiling as a backstop, not the primary mechanism.</strong> Choose a ceiling generous enough for legitimate multi-step tasks but tight enough to bound worst-case cost and latency. This is a blunt instrument by design — it exists to guarantee the loop always ends, even if every smarter signal fails to trip.</li>\n<li><strong>Wire in a no-progress signal.</strong> Delegate this to the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/no-progress-detection/\">No-Progress Detection</a> pattern so the loop can exit before exhausting its ceiling when it has visibly stalled.</li>\n<li><strong>Evaluate all three signals after every iteration, in the same order:</strong> goal check, then ceiling, then no-progress. Checking the goal first means a loop that finishes early exits early, instead of an off-by-one condition on the ceiling forcing one wasted extra step.</li>\n<li><strong>Give every non-success exit a defined output.</strong> A loop that hits the ceiling or the no-progress signal should return its best available partial result, escalate to a human, or fail with a structured reason — never just stop silently.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>Any multi-step agent loop: ReAct-style tool-calling agents, autonomous coding agents, \"research until done\" pipelines, plan-execute-verify workflows.</li>\n<li>Loops where individual iterations are cheap enough that a token budget alone won't catch runaway iteration count.</li>\n<li>Production systems where unattended loops need a hard cost and latency ceiling regardless of how the loop is performing.</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Single-shot completions or fixed-length pipelines with a known, deterministic number of steps — there is no open-ended \"when do we stop\" question to answer.</li>\n<li>Loops that already run inside a durable orchestration framework (Temporal, Step Functions) with its own timeout and retry semantics — duplicate termination logic at both layers creates confusing, conflicting stop reasons.</li>\n<li>Extremely short loops (1-3 iterations) where the overhead of three-signal evaluation exceeds the cost of just letting the loop run to a hardcoded limit.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>False success risk</strong> — a goal check that's too permissive (e.g., \"the code compiles\" instead of \"the tests pass\") lets the loop terminate on a technically-met but practically wrong condition.</li>\n<li><strong>Ceiling tuning is task-specific</strong> — a ceiling right for a 3-file refactor is wrong for a 40-file migration; teams often need per-task-class ceilings rather than one global constant.</li>\n<li><strong>Escalation paths must exist</strong> — this pattern only decides <em>when</em> to stop; if there's no human-review or fallback path wired up for non-success exits, \"terminate and escalate\" silently becomes \"terminate and drop.\"</li>\n<li><strong>Added latency per iteration</strong> — running three checks after every step has a real, if small, cost; for very tight-loop tasks this can matter.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Ceiling Reached Before Goal, No Escalation Path</h3>\n<p><strong>Trigger</strong>: The loop hits its iteration ceiling on a genuinely hard task with no human-review or retry-with-more-budget path configured.\n<strong>Symptom</strong>: The system silently returns a partial, incorrect, or empty result and the caller has no signal that the loop was cut off rather than having completed successfully.\n<strong>Mitigation</strong>: Always tag the termination reason (<code>success</code>, <code>ceiling</code>, <code>stalled</code>, <code>error</code>) in the returned result, and require callers to branch on it explicitly rather than treating any returned value as a completed answer.</p>\n<h3>Goal Check Too Weak</h3>\n<p><strong>Trigger</strong>: The verifiable goal condition checks a proxy for success (e.g., \"no exception was thrown\") rather than the actual objective (e.g., \"the feature works as specified\").\n<strong>Symptom</strong>: The loop terminates with <code>success</code> on outputs that later turn out to be wrong, because the loop was never actually measuring the right thing.\n<strong>Mitigation</strong>: Treat the goal check itself as the highest-leverage part of this pattern — invest disproportionately in making it a real verifier (tests, schema validation, an independent grader) rather than a cheap proxy. See the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/\">Maker–Verifier Split</a> pattern for how to keep this check honest.</p>\n<h3>Iteration Miscounting</h3>\n<p><strong>Trigger</strong>: The system counts logical loop iterations differently from the underlying model calls (e.g., a single \"iteration\" internally retries a flaky tool call three times without incrementing the counter).\n<strong>Symptom</strong>: The loop runs far longer, and costs far more, than the configured ceiling implies.\n<strong>Mitigation</strong>: Increment the iteration counter at the single, unambiguous point where the loop decides \"take another step,\" not at every underlying API call.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass\nfrom enum import Enum\nfrom typing import Callable, Optional\n\n\nclass StopReason(Enum):\n    SUCCESS = \"success\"\n    CEILING = \"ceiling\"\n    STALLED = \"stalled\"\n    ERROR = \"error\"\n\n\n@dataclass\nclass LoopResult:\n    output: object\n    stop_reason: StopReason\n    iterations_used: int\n\n\ndef run_loop(\n    step_fn: Callable[[object], object],\n    initial_state: object,\n    goal_check: Callable[[object], bool],\n    no_progress_check: Callable[[list], bool],\n    max_iterations: int = 20,\n) -> LoopResult:\n    state = initial_state\n    history = [state]\n\n    for i in range(1, max_iterations + 1):\n        state = step_fn(state)\n        history.append(state)\n\n        if goal_check(state):\n            return LoopResult(state, StopReason.SUCCESS, i)\n\n        if no_progress_check(history):\n            return LoopResult(state, StopReason.STALLED, i)\n\n    return LoopResult(state, StopReason.CEILING, max_iterations)\n\n\n# Example goal check: task-specific verifier, not a cheap proxy\ndef goal_check(state: dict) -> bool:\n    return state.get(\"tests_passed\") is True\n\n\n# Delegated to the No-Progress Detection Pattern in production;\n# shown inline here for a minimal, runnable example\ndef no_progress_check(history: list, patience: int = 3) -> bool:\n    if len(history) &#x3C; patience + 1:\n        return False\n    recent = history[-patience:]\n    return all(r == recent[0] for r in recent)\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>LangChain / LangGraph</td><td>Framework</td><td><code>max_iterations</code> and custom graph exit conditions on <code>AgentExecutor</code> and <code>StateGraph</code></td></tr><tr><td>Temporal</td><td>Durable execution</td><td>Workflow-level timeouts and retry policies; often layered under application-level termination logic</td></tr><tr><td>AWS Step Functions</td><td>Durable execution</td><td>State-machine-level iteration limits (<code>MaxAttempts</code>, <code>Iterator</code> bounds)</td></tr><tr><td>Custom harnesses (e.g., \"Ralph Wiggum\"-style loops)</td><td>Pattern, not a product</td><td>Bare <code>while</code> loops around a coding agent with an external spec as the goal check</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/cost-and-efficiency/token-budget/\">Token Budget Pattern</a></strong> — bounds cost per request by token count; this pattern bounds the loop by iteration count and goal state, and the two are typically enforced together.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/reliability/circuit-breaker/\">Circuit Breaker for LLMs</a></strong> — protects against downstream failures across many requests; this pattern protects against a single loop running too long.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/no-progress-detection/\">No-Progress Detection</a></strong> — supplies the no-progress signal this pattern consumes.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/reflexion-loop/\">Reflexion Loop</a></strong> — a specific loop shape that this pattern's termination logic wraps around.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2210.03629\">ReAct: Synergizing Reasoning and Acting in Language Models (Yao et al., 2022)</a></li>\n<li><a href=\"https://happycapy.ai/blog/loop-engineering-ai-agents\">Loop Engineering for AI Agents — HappyCapy</a></li>\n<li><a href=\"https://www.mindstudio.ai/blog/what-is-loop-engineering-ai-coding-agents\">What Is Loop Engineering? — MindStudio</a></li>\n<li><a href=\"https://lushbinary.com/blog/loop-engineering-ai-coding-agents-guide/\">Loop Engineering: The Guide for AI Agents — Lushbinary</a></li>\n</ul>",
+    "toc": [
+      {
+        "title": "What It Is",
+        "url": "#what-it-is",
+        "items": []
+      },
+      {
+        "title": "The Problem It Solves",
+        "url": "#the-problem-it-solves",
+        "items": []
+      },
+      {
+        "title": "How It Works",
+        "url": "#how-it-works",
+        "items": []
+      },
+      {
+        "title": "When to Use It",
+        "url": "#when-to-use-it",
+        "items": []
+      },
+      {
+        "title": "When NOT to Use It",
+        "url": "#when-not-to-use-it",
+        "items": []
+      },
+      {
+        "title": "Trade-offs",
+        "url": "#trade-offs",
+        "items": []
+      },
+      {
+        "title": "Failure Modes",
+        "url": "#failure-modes",
+        "items": [
+          {
+            "title": "Ceiling Reached Before Goal, No Escalation Path",
+            "url": "#ceiling-reached-before-goal-no-escalation-path",
+            "items": []
+          },
+          {
+            "title": "Goal Check Too Weak",
+            "url": "#goal-check-too-weak",
+            "items": []
+          },
+          {
+            "title": "Iteration Miscounting",
+            "url": "#iteration-miscounting",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Implementation Example",
+        "url": "#implementation-example",
+        "items": []
+      },
+      {
+        "title": "Tool Landscape",
+        "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Related Patterns",
+        "url": "#related-patterns",
+        "items": []
+      },
+      {
+        "title": "Further Reading",
+        "url": "#further-reading",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "Maker–Verifier Split",
+    "pillar": "loop-engineering",
+    "status": "emerging",
+    "tags": [
+      "loops",
+      "agents",
+      "verification",
+      "human-in-the-loop",
+      "control-flow"
+    ],
+    "related": [
+      "Reflexion Loop",
+      "LLM-as-Judge",
+      "Loop Termination",
+      "Tool Output Firewall"
+    ],
+    "description": "Structurally separate the agent that does the work from the agent or process that certifies it's done, so \"done\" is an independent claim rather than the maker grading its own homework.",
+    "contributors": [
+      "@PrajwalAmte"
+    ],
+    "last_updated": "2026-07",
+    "sidebar": {
+      "order": 4
+    },
+    "slug": "loop-engineering/maker-verifier-split",
+    "body": "<h2>What It Is</h2>\n<p>The Maker–Verifier Split pattern structurally separates the agent producing work (the Maker) from the process that certifies the work is actually complete and correct (the Verifier). The two run as independent sub-agents, processes, or checks — never the same call, and ideally not even the same model configuration — so that a loop's \"it is done\" signal means something more than the Maker's own self-assessment.</p>\n<h2>The Problem It Solves</h2>\n<p>An unattended agent loop is also, by definition, an agent making mistakes unattended. If the same agent that produces an output is also the one deciding whether that output is good enough, the loop inherits every blind spot the Maker has: it will tend to approve outputs that satisfy its own (possibly wrong) understanding of the task, because it has no external check against that understanding. Concretely:</p>\n<ul>\n<li>A coding agent that \"reviews its own diff\" tends to approve patches that reflect its own misreading of the spec, since the same misreading produced both the patch and the review.</li>\n<li>A research agent that decides for itself when it has \"gathered enough sources\" tends to stop exactly when its own uncertainty happens to be low, which is not the same as when the research is actually sufficient.</li>\n<li>Without an independent verifier, a long-running loop's claim of \"done\" is unfalsifiable from inside the system — the only way to catch a wrong \"done\" is for a human to check the output after the fact, which defeats much of the point of running the loop unattended.</li>\n</ul>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">sequenceDiagram\n    participant M as Maker\n    participant V as Verifier\n    participant H as Human (escalation path)\n\n    M->>M: Produce attempt\n    M->>V: Submit output for verification\n    V->>V: Check against independent criteria (tests, schema, rubric, or separate model)\n    alt Verifier passes\n        V-->>M: Approved\n        M->>M: Terminate loop: success\n    else Verifier fails\n        V-->>M: Rejected + concrete reason\n        M->>M: Re-attempt using rejection reason\n    end\n    Note over M,V: If rejected N times or Verifier itself is uncertain\n    V->>H: Escalate for human judgment\n    H-->>M: Final decision\n</pre>\n<ol>\n<li><strong>Define the Verifier before building the Maker's loop.</strong> The Verifier's criteria should come from the task specification, not be reverse-engineered from what the Maker tends to produce — otherwise the Verifier ends up validating the Maker's habits rather than the actual requirement.</li>\n<li><strong>Keep the Verifier's inputs independent of the Maker's reasoning.</strong> The Verifier should check the <em>output</em> (does the code pass tests, does the data match the schema, does the answer satisfy the rubric) without access to the Maker's internal justification for why it believes the output is correct — access to that justification is exactly what lets a Verifier get talked into approving a flawed output.</li>\n<li><strong>Prefer mechanical verifiers over model-based ones where possible.</strong> A test suite, a schema validator, or a static analyzer cannot be persuaded; a second LLM call judging the first LLM's work can be, especially if both share training data, instruction-following habits, or blind spots.</li>\n<li><strong>When a model-based Verifier is unavoidable</strong>, use a genuinely different model, prompt, or vantage point than the Maker — grading the Maker's own reasoning trace with the Maker's own voice reproduces the self-certification problem this pattern exists to avoid.</li>\n<li><strong>Give rejections a concrete, actionable reason</strong>, not just pass/fail — this is what the Maker's next attempt (or a <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/reflexion-loop/\">Reflexion Loop</a>) uses to actually improve rather than re-guessing.</li>\n<li><strong>Wire an escalation path for Verifier uncertainty</strong>, not just Maker failure. A Verifier that itself can't confidently pass or fail an attempt after repeated tries should hand off to a human rather than defaulting to either approval or endless rejection.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>Autonomous or semi-autonomous loops running with limited human supervision, where a wrong \"done\" signal has real cost (shipped code, sent communications, executed transactions).</li>\n<li>Tasks where an independent, mechanical check exists or can be built (tests, schema validation, static analysis, a business-rule engine).</li>\n<li>Any loop pattern (Reflexion Loop, plan-execute-verify) that already needs an evaluator or goal check — this pattern is the design principle for how to make that check trustworthy.</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Low-stakes, easily-reversible tasks where a wrong \"done\" costs little and a human reviews the output anyway before it matters — the added architectural complexity isn't earning its cost.</li>\n<li>Tasks with no meaningful way to construct an independent verifier (deeply subjective creative work with no rubric) — forcing a Maker–Verifier split here just relocates the subjectivity into the Verifier's opinion, dressed up as independent verification.</li>\n<li>Extremely tight latency budgets where the two-hop Maker → Verifier round trip (and any escalation path) doesn't fit the SLA, and the task's stakes genuinely don't justify the added latency.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Verifier quality becomes the real bottleneck</strong> — a weak or gameable Verifier gives false confidence; the whole pattern is only as good as the independence and rigor of the check.</li>\n<li><strong>Added latency and cost</strong> — every attempt now costs a Maker call plus a Verifier call (and occasionally a human escalation), compared to a single self-assessed pass.</li>\n<li><strong>Building a good mechanical Verifier is itself engineering work</strong> — for many real tasks, \"does the code pass tests\" is easy to define, but \"does this research answer sufficiently address the question\" is not, and a weak proxy Verifier can be worse than an honest self-assessment.</li>\n<li><strong>Escalation paths need real ownership</strong> — an escalation queue that no human actually monitors turns \"escalate to human\" into a silent dead end, which is worse than the loop failing loudly.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Verifier Shares the Maker's Blind Spot</h3>\n<p><strong>Trigger</strong>: The Verifier is a model-based check using the same underlying model, similar prompting style, or the same misreading of the task spec as the Maker.\n<strong>Symptom</strong>: The Verifier approves outputs that reflect a shared misunderstanding, giving false confidence that independent verification occurred.\n<strong>Mitigation</strong>: Use mechanical checks (tests, schema validation) wherever the task allows; when a model-based Verifier is necessary, deliberately use a different model or a materially different prompt framing than the Maker.</p>\n<h3>Verifier Reverse-Engineered from Maker Output</h3>\n<p><strong>Trigger</strong>: The Verifier's criteria were written by observing what the Maker tends to produce, rather than derived from the original task specification.\n<strong>Symptom</strong>: The Verifier validates the Maker's habitual patterns rather than the actual requirement, and drifts further from the true spec as the Maker's habits evolve.\n<strong>Mitigation</strong>: Derive Verifier criteria from the task specification or acceptance criteria directly, and review them independently of any Maker output.</p>\n<h3>Silent Escalation Dead End</h3>\n<p><strong>Trigger</strong>: An escalation path to a human exists on paper (a queue, a ticket, a Slack channel) but nobody is actually monitoring it.\n<strong>Symptom</strong>: Attempts that should have been caught and reviewed instead sit unresolved indefinitely, and the loop either times out with no result or a downstream process treats the unresolved state as a default approval.\n<strong>Mitigation</strong>: Treat the escalation path as a monitored on-call responsibility with an SLA, not a fire-and-forget queue; alert on escalation backlog the same way you'd alert on any other production queue.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass\nfrom enum import Enum\nfrom typing import Callable, Optional\n\n\nclass VerifyStatus(Enum):\n    APPROVED = \"approved\"\n    REJECTED = \"rejected\"\n    UNCERTAIN = \"uncertain\"  # triggers human escalation\n\n\n@dataclass\nclass VerifyResult:\n    status: VerifyStatus\n    reason: str\n\n\ndef maker_verifier_loop(\n    task: str,\n    maker_fn: Callable[[str, list], object],\n    verifier_fn: Callable[[object], VerifyResult],\n    escalate_fn: Callable[[object, list], object],\n    max_attempts: int = 4,\n) -> dict:\n    rejection_reasons: list = []\n\n    for attempt in range(1, max_attempts + 1):\n        output = maker_fn(task, rejection_reasons)\n        result = verifier_fn(output)  # independent of maker_fn's reasoning\n\n        if result.status == VerifyStatus.APPROVED:\n            return {\"output\": output, \"status\": \"success\", \"attempts\": attempt}\n\n        if result.status == VerifyStatus.UNCERTAIN:\n            human_decision = escalate_fn(output, rejection_reasons)\n            return {\n                \"output\": human_decision,\n                \"status\": \"human_reviewed\",\n                \"attempts\": attempt,\n            }\n\n        rejection_reasons.append(result.reason)\n\n    # Exhausted attempts without approval — escalate rather than\n    # silently returning an unverified output\n    human_decision = escalate_fn(output, rejection_reasons)\n    return {\"output\": human_decision, \"status\": \"escalated_ceiling\", \"attempts\": max_attempts}\n\n\n# Example mechanical verifier: independent of the maker's reasoning trace\ndef verifier_fn(output: dict) -> VerifyResult:\n    if output.get(\"tests_passed\") is True:\n        return VerifyResult(VerifyStatus.APPROVED, \"all tests passed\")\n    if output.get(\"tests_run\", 0) == 0:\n        return VerifyResult(VerifyStatus.UNCERTAIN, \"no tests were executed\")\n    return VerifyResult(VerifyStatus.REJECTED, f\"failed: {output.get('failure_detail')}\")\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>Test runners (pytest, jest, go test)</td><td>General tooling</td><td>The most common mechanical Verifier for code-generation Makers</td></tr><tr><td>JSON Schema / Pydantic validators</td><td>Open-source</td><td>Mechanical Verifier for structured-output Makers</td></tr><tr><td>Static analyzers / linters</td><td>General tooling</td><td>Cheap, non-gameable Verifier layer that runs before more expensive checks</td></tr><tr><td>Human-review queues (Jira, Linear, custom escalation UIs)</td><td>General tooling</td><td>The escalation path for Verifier-uncertain cases; needs monitored ownership</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/reflexion-loop/\">Reflexion Loop</a></strong> — a loop shape where this pattern's principle (independent Evaluator) is directly applicable; Reflexion without a genuinely independent Evaluator degrades into self-certification.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/\">LLM-as-Judge</a></strong> — can serve as a model-based Verifier, provided it uses a different model or vantage point than the Maker.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a></strong> — the Verifier's pass/fail decision is typically one of the goal-check inputs to overall loop termination.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/security-and-trust/tool-output-firewall/\">Tool Output Firewall</a></strong> — a related separation-of-concerns pattern that sanitizes untrusted tool output re-entering context, similar in spirit to keeping the Verifier's inputs independent.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://lushbinary.com/blog/loop-engineering-ai-coding-agents-guide/\">Loop Engineering: The Guide for AI Agents — Lushbinary</a></li>\n<li><a href=\"https://github.com/cobusgreyling/loop-engineering\">GitHub: loop-engineering patterns and CLI tools — cobusgreyling</a></li>\n<li><a href=\"https://arxiv.org/abs/2303.11366\">Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)</a></li>\n</ul>",
+    "toc": [
+      {
+        "title": "What It Is",
+        "url": "#what-it-is",
+        "items": []
+      },
+      {
+        "title": "The Problem It Solves",
+        "url": "#the-problem-it-solves",
+        "items": []
+      },
+      {
+        "title": "How It Works",
+        "url": "#how-it-works",
+        "items": []
+      },
+      {
+        "title": "When to Use It",
+        "url": "#when-to-use-it",
+        "items": []
+      },
+      {
+        "title": "When NOT to Use It",
+        "url": "#when-not-to-use-it",
+        "items": []
+      },
+      {
+        "title": "Trade-offs",
+        "url": "#trade-offs",
+        "items": []
+      },
+      {
+        "title": "Failure Modes",
+        "url": "#failure-modes",
+        "items": [
+          {
+            "title": "Verifier Shares the Maker's Blind Spot",
+            "url": "#verifier-shares-the-makers-blind-spot",
+            "items": []
+          },
+          {
+            "title": "Verifier Reverse-Engineered from Maker Output",
+            "url": "#verifier-reverse-engineered-from-maker-output",
+            "items": []
+          },
+          {
+            "title": "Silent Escalation Dead End",
+            "url": "#silent-escalation-dead-end",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Implementation Example",
+        "url": "#implementation-example",
+        "items": []
+      },
+      {
+        "title": "Tool Landscape",
+        "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Related Patterns",
+        "url": "#related-patterns",
+        "items": []
+      },
+      {
+        "title": "Further Reading",
+        "url": "#further-reading",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "No-Progress Detection",
+    "pillar": "loop-engineering",
+    "status": "emerging",
+    "tags": [
+      "loops",
+      "agents",
+      "convergence",
+      "oscillation",
+      "control-flow"
+    ],
+    "related": [
+      "Loop Termination",
+      "Reflexion Loop",
+      "Embedding Drift Detector"
+    ],
+    "description": "Detect stalled or oscillating agent loops by measuring the delta between successive iterations, so the loop can stop before exhausting its full iteration ceiling.",
+    "contributors": [
+      "@PrajwalAmte"
+    ],
+    "last_updated": "2026-07",
+    "sidebar": {
+      "order": 3
+    },
+    "slug": "loop-engineering/no-progress-detection",
+    "body": "<h2>What It Is</h2>\n<p>The No-Progress Detection pattern measures how much an agentic loop's state actually changes from one iteration to the next, and stops the loop early when that measurement shows a plateau (no meaningful change) or an oscillation (cycling between a small number of near-identical states) — rather than letting the loop run all the way to its iteration ceiling regardless of whether it's still making progress.</p>\n<h2>The Problem It Solves</h2>\n<p>An iteration ceiling guarantees a loop eventually stops, but it's a blunt instrument: it lets a loop burn its <em>entire</em> budget even when it visibly stopped improving several iterations earlier. Two specific failure shapes are common enough to name:</p>\n<ul>\n<li><strong>Plateau</strong>: the loop keeps producing output, but each successive attempt is functionally the same as the last — a coding agent that keeps \"fixing\" a bug with the identical patch, a research agent that keeps re-running the same query with cosmetic rewording.</li>\n<li><strong>Oscillation</strong>: the loop alternates between two (or a small cycle of) near-identical states without ever settling — an agent that alternates between two tool calls, or a Reflexion-style loop where the Self-Reflection step keeps \"correcting\" the Actor back and forth between two wrong answers.</li>\n</ul>\n<p>Both waste the remaining iteration budget and, in production, the added latency and cost of running to the ceiling rather than stopping the moment the stall is detectable.</p>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Iteration completes, output added to history\"] --> B[\"Compute delta vs. recent history\"]\n    B --> C{\"Delta classification\"}\n    C -->|\"Improving\"| D[\"Continue loop\"]\n    C -->|\"Plateaued (delta ~0 for N iterations)\"| E[\"Terminate: stalled\"]\n    C -->|\"Oscillating (repeating cycle detected)\"| F[\"Terminate: stalled\"]\n    C -->|\"Regressing\"| G[\"Continue loop, but flag for review\"]\n</pre>\n<ol>\n<li><strong>Maintain a rolling history</strong> of the loop's output at each iteration — not the full context, just the state being evaluated for progress (a patch diff, a generated answer, a tool-call sequence).</li>\n<li><strong>Choose a delta metric appropriate to the task.</strong> Options include exact or near-exact match (cheap, works for plateau detection), edit distance or token-level diff (works for text), embedding cosine similarity (works for semantic drift), or task-specific signals like test-pass count (works best when available, since it measures actual progress rather than surface similarity).</li>\n<li><strong>Classify the trend</strong> after each iteration: <em>improving</em> (delta shows meaningful forward movement), <em>plateaued</em> (delta near zero for a patience window of N consecutive iterations), <em>oscillating</em> (the history repeats a short cycle of 2-3 states), or <em>regressing</em> (the task-specific signal is getting worse, not just unchanged).</li>\n<li><strong>Apply a patience window before terminating on plateau or oscillation</strong> — a single flat iteration is normal; only stop after the delta stays flat, or the cycle repeats, for a configured number of consecutive iterations.</li>\n<li><strong>On termination, return the best iteration seen so far</strong>, not necessarily the last one — especially important for oscillating loops, where the last state may not be the best of the cycle.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>Any bounded loop pattern (Reflexion Loop, iterative refinement, agent re-planning) where a measurable delta between iterations is available and cost or latency savings from stopping early matter.</li>\n<li>Loops that have previously been observed to oscillate or plateau in practice — this pattern is easiest to justify once you've seen the failure mode, harder to pre-emptively tune correctly.</li>\n<li>Systems where a task-specific progress signal already exists (test-pass count, retrieval-relevance score) that can be reused as the delta metric at near-zero extra cost.</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Tasks with no measurable delta between iterations, or where surface similarity is a poor proxy for actual progress (e.g., a long-form writing loop where two drafts can look textually similar but differ meaningfully in quality).</li>\n<li>Loops expected to have genuinely slow, incremental convergence, where several visually-similar iterations in a row are normal and expected rather than a sign of stalling — an aggressive patience window here causes false early stops.</li>\n<li>Situations where the cost of a false early stop (abandoning a task that was about to succeed) is much higher than the cost of a few wasted iterations — in that case, let the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a> pattern's iteration ceiling be the only backstop.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Metric choice is task-specific and can be wrong</strong> — a delta metric tuned for code diffs doesn't transfer to open-ended text generation, and a poorly chosen metric can either miss real stalls or flag false ones.</li>\n<li><strong>Patience window tuning</strong> — too short, and slow-but-real progress gets mistaken for a plateau; too long, and the pattern provides little savings over just running to the ceiling.</li>\n<li><strong>Added per-iteration compute</strong> — computing a delta (especially embedding-based) has a real cost, which needs to be weighed against the savings from stopping early.</li>\n<li><strong>Metric gaming</strong> — a loop can settle into an output that scores as \"improving\" on the chosen delta metric while making no real progress on the actual task, if the metric and the task diverge.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>False Plateau</h3>\n<p><strong>Trigger</strong>: The delta metric shows near-zero change between iterations, but the underlying content actually differs in a way that matters for the task (e.g., a one-line but critical fix that a text-similarity metric treats as a negligible edit).\n<strong>Symptom</strong>: The loop terminates as \"stalled\" just before it would have succeeded.\n<strong>Mitigation</strong>: Prefer task-specific progress signals (test-pass count, schema-validity score) over generic text similarity whenever one is available; reserve generic similarity metrics for cases with no better option.</p>\n<h3>Undetected Oscillation</h3>\n<p><strong>Trigger</strong>: The patience window or cycle-length check is too short to catch a 3-or-more-state oscillation cycle.\n<strong>Symptom</strong>: The loop keeps cycling and only stops when it eventually hits the iteration ceiling, defeating the purpose of this pattern.\n<strong>Mitigation</strong>: Check for repeating cycles of at least 2-4 states, not just exact-repeat-of-the-immediately-prior-state, and size the patience window to be at least twice the longest cycle length you expect to catch.</p>\n<h3>Metric-Task Mismatch</h3>\n<p><strong>Trigger</strong>: The chosen delta metric measures something correlated with, but not identical to, actual task progress.\n<strong>Symptom</strong>: The loop reports \"improving\" while the actual output quality is flat or worsening, or reports \"stalled\" on a loop that was genuinely progressing slowly.\n<strong>Mitigation</strong>: Validate the delta metric against a held-out set of known-good and known-stalled loop traces before relying on it in production; treat metric selection as itself requiring evaluation, not a one-time assumption.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass\nfrom typing import Callable, Optional\n\n\n@dataclass\nclass ProgressState:\n    history: list\n    patience: int = 3\n\n\ndef default_similarity(a: str, b: str) -> float:\n    # Minimal placeholder: word-overlap ratio. Replace with an\n    # embedding-based or task-specific metric in production.\n    words_a, words_b = set(a.split()), set(b.split())\n    if not words_a or not words_b:\n        return 0.0\n    return len(words_a &#x26; words_b) / len(words_a | words_b)\n\n\ndef detect_plateau(\n    history: list,\n    patience: int,\n    similarity_fn: Callable[[str, str], float] = default_similarity,\n    threshold: float = 0.95,\n) -> bool:\n    if len(history) &#x3C; patience + 1:\n        return False\n    window = history[-(patience + 1):]\n    return all(\n        similarity_fn(window[i], window[i + 1]) >= threshold\n        for i in range(len(window) - 1)\n    )\n\n\ndef detect_oscillation(history: list, max_cycle_length: int = 4) -> bool:\n    for cycle_len in range(2, max_cycle_length + 1):\n        if len(history) &#x3C; cycle_len * 2:\n            continue\n        recent = history[-cycle_len * 2:]\n        first_half, second_half = recent[:cycle_len], recent[cycle_len:]\n        if first_half == second_half:\n            return True\n    return False\n\n\ndef no_progress_check(history: list, patience: int = 3) -> Optional[str]:\n    if detect_oscillation(history):\n        return \"oscillating\"\n    if detect_plateau(history, patience):\n        return \"plateaued\"\n    return None\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>sentence-transformers / OpenAI embeddings</td><td>Embedding libraries</td><td>Common backbone for semantic delta scoring between iterations</td></tr><tr><td>difflib / Levenshtein libraries</td><td>Open-source</td><td>Cheap text-delta metrics for code diffs and short text</td></tr><tr><td>Custom task-specific scorers (test-pass count, schema validators)</td><td>Task-specific</td><td>Usually the highest-signal option when available; prefer these over generic similarity</td></tr><tr><td>LangGraph checkpoints</td><td>Framework</td><td>Can be inspected across steps to build a rolling history for delta computation</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a></strong> — this pattern supplies one of the three signals that Loop Termination consumes.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/reflexion-loop/\">Reflexion Loop</a></strong> — a common loop shape where oscillation between two corrected-and-re-broken states is a frequently observed failure.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/observability/embedding-drift-detector/\">Embedding Drift Detector</a></strong> — a related idea applied across time in production monitoring rather than within a single loop's iterations.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://agentshortlist.com/articles/loop-engineering\">Loop Engineering (2026): Self-Prompting AI Agent Patterns — Agent Shortlist</a></li>\n<li><a href=\"https://www.mindstudio.ai/blog/what-is-loop-engineering-ai-coding-agents\">What Is Loop Engineering? — MindStudio</a></li>\n<li><a href=\"https://arxiv.org/abs/2303.11366\">Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)</a></li>\n</ul>",
+    "toc": [
+      {
+        "title": "What It Is",
+        "url": "#what-it-is",
+        "items": []
+      },
+      {
+        "title": "The Problem It Solves",
+        "url": "#the-problem-it-solves",
+        "items": []
+      },
+      {
+        "title": "How It Works",
+        "url": "#how-it-works",
+        "items": []
+      },
+      {
+        "title": "When to Use It",
+        "url": "#when-to-use-it",
+        "items": []
+      },
+      {
+        "title": "When NOT to Use It",
+        "url": "#when-not-to-use-it",
+        "items": []
+      },
+      {
+        "title": "Trade-offs",
+        "url": "#trade-offs",
+        "items": []
+      },
+      {
+        "title": "Failure Modes",
+        "url": "#failure-modes",
+        "items": [
+          {
+            "title": "False Plateau",
+            "url": "#false-plateau",
+            "items": []
+          },
+          {
+            "title": "Undetected Oscillation",
+            "url": "#undetected-oscillation",
+            "items": []
+          },
+          {
+            "title": "Metric-Task Mismatch",
+            "url": "#metric-task-mismatch",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Implementation Example",
+        "url": "#implementation-example",
+        "items": []
+      },
+      {
+        "title": "Tool Landscape",
+        "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Related Patterns",
+        "url": "#related-patterns",
+        "items": []
+      },
+      {
+        "title": "Further Reading",
+        "url": "#further-reading",
+        "items": []
+      }
+    ]
+  },
+  {
+    "title": "Reflexion Loop",
+    "pillar": "loop-engineering",
+    "status": "emerging",
+    "tags": [
+      "loops",
+      "agents",
+      "self-correction",
+      "memory",
+      "reflection"
+    ],
+    "related": [
+      "LLM-as-Judge",
+      "Loop Termination",
+      "Maker–Verifier Split",
+      "No-Progress Detection"
+    ],
+    "description": "A three-role loop — Actor, Evaluator, Self-Reflection — where verbal lessons from failed attempts are written to episodic memory and read back on the next try.",
+    "contributors": [
+      "@PrajwalAmte"
+    ],
+    "last_updated": "2026-07",
+    "sidebar": {
+      "order": 2
+    },
+    "slug": "loop-engineering/reflexion-loop",
+    "body": "<h2>What It Is</h2>\n<p>The Reflexion Loop pattern structures self-correction around three distinct roles rather than one model repeatedly re-answering the same prompt: an <strong>Actor</strong> that attempts the task, an <strong>Evaluator</strong> that scores the attempt, and a <strong>Self-Reflection</strong> step that converts a failure into a short verbal lesson, written to an episodic memory buffer that the Actor reads before its next attempt. The loop repeats until the Evaluator passes the attempt or a termination condition (see the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a> pattern) is met.</p>\n<h2>The Problem It Solves</h2>\n<p>Naively re-prompting a model with \"try again\" after a failure rarely produces a materially different attempt — the model has no structured record of <em>what specifically</em> went wrong last time, so it tends to repeat the same mistake with cosmetic variation. This shows up as:</p>\n<ul>\n<li>A coding agent re-generating a patch that fails the same test three times in a row, because nothing in its context distinguishes attempt 3 from attempt 1.</li>\n<li>A research agent re-running a failed query with slightly different wording instead of addressing the actual reason the previous result was insufficient.</li>\n<li>Wasted iteration budget: every retry costs the same as the first attempt, with no compounding benefit from having already failed once.</li>\n</ul>\n<h2>How It Works</h2>\n<pre class=\"mermaid\">flowchart TD\n    A[\"Actor attempts task\"] --> B[\"Evaluator scores the attempt\"]\n    B --> C{\"Passed?\"}\n    C -->|\"Yes\"| D[\"Terminate: success, return output\"]\n    C -->|\"No\"| E[\"Self-Reflection step\"]\n    E --> F[\"Write verbal lesson to episodic memory\"]\n    F --> G{\"Termination condition met? (see Loop Termination Pattern)\"}\n    G -->|\"Yes\"| H[\"Terminate: exhausted, return best attempt + lessons\"]\n    G -->|\"No\"| I[\"Actor re-attempts, reading memory buffer\"]\n    I --> A\n</pre>\n<ol>\n<li><strong>Separate the three roles explicitly</strong>, even if all three are the same underlying model called with different prompts. Mixing them into a single \"critique yourself\" prompt collapses the distinction that makes this pattern work.</li>\n<li><strong>Actor attempts the task</strong> using the current prompt, tools, and whatever is in the episodic memory buffer from prior attempts.</li>\n<li><strong>Evaluator scores the attempt</strong> against an explicit, checkable criterion — ideally an external verifier (tests, schema validation, a rubric) rather than the Actor grading its own work. See the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/\">Maker–Verifier Split</a> pattern for why this separation matters.</li>\n<li><strong>On failure, the Self-Reflection step writes a short, specific, verbal lesson</strong> — not a full transcript replay, but a distilled statement of what went wrong and what to try differently (\"the patch failed because the import path assumed a flat module layout; the project uses a src/ layout\").</li>\n<li><strong>The lesson is appended to an episodic memory buffer</strong>, which the Actor reads on its next attempt alongside the original task. The buffer accumulates across attempts within a run, so attempt 4 has the accumulated lessons of attempts 1–3.</li>\n<li><strong>The loop terminates</strong> via the same signals as any other agent loop — a passing evaluation, an iteration ceiling, or a no-progress signal — since Reflexion loops can themselves stall if the lessons aren't actually actionable.</li>\n</ol>\n<h2>When to Use It</h2>\n<ul>\n<li>Tasks with a cheap, reliable automated verifier: code generation with a test suite, structured data extraction with schema validation, agent tool-calling with a checkable success condition.</li>\n<li>Multi-attempt tasks where the <em>reason</em> for failure is specific and expressible in language (a wrong assumption, a missed constraint) rather than open-ended quality judgment.</li>\n<li>Situations where retry cost is acceptable (2-4x a single attempt) in exchange for meaningfully higher success rate on attempt 2+.</li>\n</ul>\n<h2>When NOT to Use It</h2>\n<ul>\n<li>Tasks without a reliable, independent evaluator — if the Evaluator is the same model with the same blind spots as the Actor, failures can go undetected and the loop terminates on a false pass. This is the single most common way this pattern fails silently.</li>\n<li>Latency-critical, real-time responses — the sequential Actor → Evaluator → Self-Reflection → Actor round trip adds meaningful latency that a single-pass response doesn't have.</li>\n<li>Open-ended creative tasks with no checkable success criterion (there is no test suite for \"is this poem good\") — a rubric-graded Evaluator here just becomes a matter of opinion dressed up as verification.</li>\n</ul>\n<h2>Trade-offs</h2>\n<ol>\n<li><strong>Cost multiplies</strong> — each failed attempt costs an Actor call, an Evaluator call, and a Self-Reflection call; a task needing 3 attempts costs roughly 3x a single-pass approach, sometimes more.</li>\n<li><strong>Evaluator quality is the ceiling on the whole pattern</strong> — a weak or biased Evaluator makes every other part of the loop worthless, since the Actor will happily converge on whatever the Evaluator rewards, not what's actually correct.</li>\n<li><strong>Verbal lessons can be wrong or overfit</strong> — the Self-Reflection step can misattribute the cause of failure, and the Actor then \"corrects\" for the wrong reason, sometimes making the next attempt worse.</li>\n<li><strong>Memory buffer growth</strong> — across many attempts, the accumulated lessons can grow large enough to compete for context budget with the task itself; this pattern needs to be paired with the <a href=\"/AI-Engineering-Patterns/patterns/cost-and-efficiency/token-budget/\">Token Budget Pattern</a> in long-running loops.</li>\n</ol>\n<h2>Failure Modes</h2>\n<h3>Rubber-Stamp Evaluation</h3>\n<p><strong>Trigger</strong>: The Evaluator is the same model instance (or same model with the same prompt style) as the Actor, effectively grading its own homework.\n<strong>Symptom</strong>: The loop terminates with a \"pass\" on outputs that an independent check would fail, because the Evaluator shares the Actor's blind spots.\n<strong>Mitigation</strong>: Use an independent verifier where possible (test execution, schema validators, a different model or a human) rather than a same-model self-critique. See the <a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/\">Maker–Verifier Split</a> pattern.</p>\n<h3>Misattributed Lesson</h3>\n<p><strong>Trigger</strong>: The Self-Reflection step identifies a plausible-sounding but incorrect cause for the failure.\n<strong>Symptom</strong>: Subsequent attempts \"fix\" the wrong thing, and the loop either stalls (no measurable improvement) or actively regresses.\n<strong>Mitigation</strong>: Ground the Self-Reflection step in concrete evaluator output (the actual failing test's error message, the actual schema validation error) rather than asking the model to freely speculate about why it failed.</p>\n<h3>Memory Buffer Bloat</h3>\n<p><strong>Trigger</strong>: Long-running loops accumulate many verbal lessons without pruning, and the buffer grows to consume a large fraction of the available context.\n<strong>Symptom</strong>: Later attempts have less room for the actual task context, and quality degrades even as the lesson buffer grows.\n<strong>Mitigation</strong>: Cap the buffer to the most recent and most relevant N lessons, or periodically summarize the buffer down to its essential, non-redundant points.</p>\n<h2>Implementation Example</h2>\n<pre><code class=\"language-python\">from dataclasses import dataclass, field\nfrom typing import Callable\n\n\n@dataclass\nclass EvalResult:\n    passed: bool\n    detail: str  # concrete failure detail, e.g. test error message\n\n\n@dataclass\nclass ReflexionState:\n    task: str\n    memory: list = field(default_factory=list)  # verbal lessons\n    last_output: object = None\n\n\ndef reflexion_loop(\n    task: str,\n    actor_fn: Callable[[str, list], object],\n    evaluator_fn: Callable[[object], EvalResult],\n    reflect_fn: Callable[[object, str], str],\n    max_attempts: int = 4,\n) -> ReflexionState:\n    state = ReflexionState(task=task)\n\n    for attempt in range(1, max_attempts + 1):\n        output = actor_fn(task, state.memory)\n        state.last_output = output\n\n        result = evaluator_fn(output)\n        if result.passed:\n            return state  # success — state.last_output is the answer\n\n        # Grounded in the evaluator's concrete failure detail,\n        # not free speculation\n        lesson = reflect_fn(output, result.detail)\n        state.memory.append(lesson)\n\n    return state  # exhausted — caller checks state.last_output + memory\n</code></pre>\n<h2>Tool Landscape</h2>\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n<table><thead><tr><th>Tool</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td>Reflexion (research implementation)</td><td>Open-source (paper release)</td><td>Reference implementation of the Actor/Evaluator/Self-Reflection loop with episodic memory</td></tr><tr><td>LangGraph</td><td>Framework</td><td>Explicit multi-node graphs suited to modeling separate Actor/Evaluator/Reflection roles</td></tr><tr><td>DeepEval / RAGAS</td><td>Evaluation libraries</td><td>Can serve as the Evaluator role when the task has RAG- or generation-quality dimensions</td></tr><tr><td>Test runners (pytest, jest, etc.)</td><td>General tooling</td><td>The most reliable Evaluator for code-generation Reflexion loops</td></tr></tbody></table>\n<h2>Related Patterns</h2>\n<ul>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/\">LLM-as-Judge</a></strong> — an offline evaluation harness; this pattern's Evaluator role can use LLM-as-Judge techniques, but Reflexion applies them inside a live retry loop rather than in batch evaluation.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/\">Loop Termination</a></strong> — supplies the stopping logic this pattern needs to avoid looping indefinitely on an unsolvable task.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/\">Maker–Verifier Split</a></strong> — the structural principle behind keeping the Evaluator independent of the Actor.</li>\n<li><strong><a href=\"/AI-Engineering-Patterns/patterns/loop-engineering/no-progress-detection/\">No-Progress Detection</a></strong> — detects when successive Reflexion attempts stop improving, independent of hitting the attempt ceiling.</li>\n</ul>\n<h2>Further Reading</h2>\n<ul>\n<li><a href=\"https://arxiv.org/abs/2303.11366\">Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)</a></li>\n<li><a href=\"https://arxiv.org/abs/2210.03629\">ReAct: Synergizing Reasoning and Acting in Language Models (Yao et al., 2022)</a></li>\n<li><a href=\"https://tosea.ai/blog/loop-engineering-ai-agents-complete-guide-2026\">What Is Loop Engineering? A Complete Guide from Prompt to Harness Engineering — Tosea.ai</a></li>\n</ul>",
+    "toc": [
+      {
+        "title": "What It Is",
+        "url": "#what-it-is",
+        "items": []
+      },
+      {
+        "title": "The Problem It Solves",
+        "url": "#the-problem-it-solves",
+        "items": []
+      },
+      {
+        "title": "How It Works",
+        "url": "#how-it-works",
+        "items": []
+      },
+      {
+        "title": "When to Use It",
+        "url": "#when-to-use-it",
+        "items": []
+      },
+      {
+        "title": "When NOT to Use It",
+        "url": "#when-not-to-use-it",
+        "items": []
+      },
+      {
+        "title": "Trade-offs",
+        "url": "#trade-offs",
+        "items": []
+      },
+      {
+        "title": "Failure Modes",
+        "url": "#failure-modes",
+        "items": [
+          {
+            "title": "Rubber-Stamp Evaluation",
+            "url": "#rubber-stamp-evaluation",
+            "items": []
+          },
+          {
+            "title": "Misattributed Lesson",
+            "url": "#misattributed-lesson",
+            "items": []
+          },
+          {
+            "title": "Memory Buffer Bloat",
+            "url": "#memory-buffer-bloat",
+            "items": []
+          }
+        ]
+      },
+      {
+        "title": "Implementation Example",
+        "url": "#implementation-example",
+        "items": []
+      },
+      {
+        "title": "Tool Landscape",
+        "url": "#tool-landscape",
+        "items": []
+      },
+      {
+        "title": "Related Patterns",
+        "url": "#related-patterns",
         "items": []
       },
       {
