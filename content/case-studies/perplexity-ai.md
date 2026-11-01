@@ -7,18 +7,18 @@ patterns:
   - "Model Router"
   - "Semantic Caching"
   - "Span-Level Tracing"
-  - "Token Budget Pattern"
+  - "Token Budget"
   - "Retrieval Freshness Watermark"
 last_updated: "2026-07"
 sidebar:
   order: 1
 ---
 
-> *This analysis is based on public engineering blog posts, conference talks, patent filings, and observable system behaviour. It is not official documentation from the company.*
+> *Perplexity has published little about its internals. This case study is a **reconstruction**: product facts come from the public sources under References, and the architecture shows how these patterns would plausibly fit together for a product with Perplexity's constraints. It is not a description of Perplexity's code, and the numbers in the walkthrough are illustrative.*
 
 ## System Context
 
-Perplexity AI is an answer engine that responds to natural language queries with cited, synthesised answers drawn from live web content. As of late 2024 the product handles over **500 million queries per month** across Perplexity.ai (web), iOS/Android apps, and an API tier — a number publicly cited by CEO Aravind Srinivas in interviews. The product operates two user tiers: a free tier (Quick mode) with a hard latency target under 1 second TTFT, and a paid Pro tier ($20/month) with a target under 2 seconds TTFT and access to frontier models. Revenue comes entirely from subscriptions and the Perplexity API — no advertising, which means cost-per-query economics are the primary engineering constraint.
+Perplexity AI is an answer engine that responds to natural language queries with cited, synthesised answers drawn from live web content. As of late 2024 the product handles hundreds of millions of queries per month (per the company's public statements) across Perplexity.ai (web), iOS/Android apps, and an API tier. The product operates two user tiers: a free tier (Quick mode) with a hard latency target under 1 second TTFT, and a paid Pro tier ($20/month) with a target under 2 seconds TTFT and access to frontier models. Most queries are answered for free users, so cost per query is a primary engineering constraint.
 
 The system is backed by a combination of Perplexity's own continuously-crawled web index and live third-party search API calls (Bing, SerpAPI). The crawled index provides low-latency retrieval for evergreen content; the live search path handles breaking news and very recent events where the crawled index is not yet populated. This dual-source architecture is a root cause of several of the engineering challenges below.
 
@@ -76,7 +76,7 @@ flowchart LR
 
 1. **Query ingestion** — The user's query arrives at the edge. A SHA-256 hash of the normalised query text is checked against an exact cache. On a hit, the response is returned immediately without entering the pipeline.
 
-2. **Semantic cache lookup** — The query is embedded and compared against the semantic cache index. Queries within a cosine similarity threshold (approximately 0.92–0.95 based on observable behaviour) return the cached response. On a miss, a new span opens and the pipeline continues.
+2. **Semantic cache lookup** — The query is embedded and compared against the semantic cache index. Queries within a cosine similarity threshold (the exact threshold isn't public) return the cached response. On a miss, a new span opens and the pipeline continues.
 
 3. **Complexity classification and model routing** — A lightweight classifier (heuristic + small ML model) assigns a complexity tier to the query. Simple factual queries are routed to a smaller, faster model. Complex, multi-step, or Pro-tier queries are routed to a frontier model. This decision is recorded as a span attribute for post-hoc analysis.
 
@@ -144,7 +144,7 @@ sequenceDiagram
 
 ## Pattern Interaction Notes
 
-**The caching layer changes the economics of the routing layer.** Without semantic caching, the Model Router's cost savings are the entire story. With caching, the router only matters for cache misses. On a heavily repeated topic (a breaking news event), the cache absorbs 60–80% of traffic, and the router only sees the long tail of novel phrasings. This means the router can afford to be more conservative — defaulting to the higher-quality frontier model for uncertain cases — because it handles a smaller fraction of total volume.
+**The caching layer changes the economics of the routing layer.** Without semantic caching, the Model Router's cost savings are the entire story. With caching, the router only matters for cache misses. On a heavily repeated topic (a breaking news event), the cache can absorb most of the traffic, and the router only sees the long tail of novel phrasings. This means the router can afford to be more conservative — defaulting to the higher-quality frontier model for uncertain cases — because it handles a smaller fraction of total volume.
 
 **Freshness watermarking gates what the token budget can select.** The token budget pattern is not just a cost control — it acts as a quality filter when combined with freshness scores. Because chunks are ranked by freshness before packing, the budget mechanism ensures that if context space is scarce, old content is dropped first. Removing either pattern degrades the other: a token budget without freshness scores drops arbitrarily; freshness scores without a budget are advisory-only.
 
@@ -170,7 +170,7 @@ sequenceDiagram
 
 > Source: Perplexity AI blog, "How we build Perplexity", 2024
 
-**Sources are re-ranked after retrieval using a lightweight reranker model.** The latency budget includes a post-retrieval reranking step of approximately 100–200ms (inferred from span timing analysis). This step is separate from the freshness watermark scorer.
+**Sources are re-ranked after retrieval using a lightweight reranker model.** The latency budget includes a post-retrieval reranking step of approximately 100–200ms. This step is separate from the freshness watermark scorer.
 
 > Source: Inferred from observed latency profiles; consistent with standard RAG practices described in Lewis et al., 2020
 
@@ -214,6 +214,5 @@ sequenceDiagram
 1. [Perplexity AI Engineering Blog](https://blog.perplexity.ai) — Product architecture and model strategy posts, 2023–2024
 2. [Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks — Lewis et al., 2020](https://arxiv.org/abs/2005.11401)
 3. [Reciprocal Rank Fusion outperforms Condorcet and individual rank learning methods — Cormack, Clarke, Buettcher, SIGIR 2009](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)
-4. [Lex Fridman Podcast #417 — Aravind Srinivas on Perplexity architecture and latency targets, 2024](https://lexfridman.com/perplexity-aravind-srinivas/)
+4. [Lex Fridman Podcast — interview with Aravind Srinivas, 2024](https://lexfridman.com/perplexity-aravind-srinivas/)
 5. [Introducing the Sonar Model Family — Perplexity AI Developer Blog, 2024](https://docs.perplexity.ai/docs/sonar-pro)
-6. [The Pragmatic Engineer: How Perplexity AI is built — Gergely Orosz, 2024](https://newsletter.pragmaticengineer.com)

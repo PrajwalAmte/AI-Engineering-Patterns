@@ -4,172 +4,168 @@ pillar: inference-and-serving
 status: validated-in-production
 tags: [routing, cost, latency, model-selection]
 related:
-  - LLM Gateway Pattern
+  - LLM Gateway
   - Semantic Caching
-  - Tiered Model Strategy
+  - Effort Scaling
+  - LLM-as-Judge
+example: examples/inference_and_serving/model_router.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-03"
-description: Route queries to cheap/fast models vs powerful ones based on complexity for 85-99% cost reduction.
+last_updated: "2026-11"
+description: Send each query to the cheapest model that can handle it, and escalate when the cheap answer doesn't pass a check.
 sidebar:
   order: 2
 ---
 
 ## What It Is
 
-A model router classifies incoming queries by complexity and routes them to the appropriate model tier. Simple queries go to fast, cheap models. Complex queries go to powerful, expensive models. The router itself can be a lightweight classifier, an LLM judge, or a rule-based system.
+A router looks at a query before any model sees it and picks a tier: a small, fast model for easy queries and a large one for hard queries. If the cheap model's answer fails a check, the router escalates to the next tier.
+
+The decision can be a few rules, a small trained classifier, or a call to a cheap model. Most teams start with rules, collect data, and train a classifier later.
 
 ## The Problem It Solves
 
-Most production workloads have a highly skewed complexity distribution. Typically 70-90% of queries are simple enough for a small, fast model, but teams route everything to a single powerful (expensive) model because they lack a mechanism to differentiate. This results in 5-20x higher costs than necessary.
+Look at a day of real traffic for almost any assistant and you'll find that most queries are easy: lookups, reformatting, short factual answers. A smaller model handles these as well as the flagship does. Teams still send everything to the flagship, because it was the model used in the demo and nobody wants to be the one who made answers worse.
+
+The result is that you pay flagship prices for "what's your refund policy?" The size of the waste depends on your traffic mix, so measure it. Replay a sample of logged queries through a smaller model and compare the answers before you build anything.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart TD
-    A["Query arrives"] --> B["Router classifies complexity"]
-    B --> C{"Complexity tier"}
-    C -->|"Simple"| D["Route to low-cost model"]
-    C -->|"Medium"| E["Route to balanced model"]
-    C -->|"Complex"| F["Route to high-capability model"]
-    D --> G["Return response"]
-    E --> G
-    F --> G
-    G --> H["Track quality and route outcomes"]
-    H --> I["Tune thresholds / retrain router"]
-    I --> B
+    Q["Query"] --> S["Score complexity"]
+    S -->|"low"| T1["Small model"]
+    S -->|"high"| T2["Large model"]
+    T1 --> C{"Answer passes check?"}
+    C -->|"yes"| R["Return"]
+    C -->|"no: escalate"| T2
+    T2 --> R
+    C -.->|"escalation rate per tier"| M["Monitor and retune thresholds"]
 </pre>
 
-1. A query arrives at the router.
-2. The router classifies the query into a complexity tier using one of:
-   - **Rule-based**: Query length, keyword presence, conversation turn count.
-   - **Classifier**: A lightweight ML model trained on labeled query-complexity pairs.
-   - **LLM judge**: A cheap model scores the query complexity before routing (adds latency but is more accurate).
-3. Based on the tier, the query is sent to the corresponding model.
-4. Quality monitoring compares outputs across tiers to validate routing accuracy.
-5. Misrouted queries (simple queries that needed the powerful model) are logged and used to retrain the router.
+1. **Score the query.** Start with signals you can compute for free: length, reasoning words ("why", "compare", "design"), code, and conversation depth.
+2. **Pick the cheapest tier** whose threshold covers the score.
+3. **Check the answer.** The check can be as simple as "not empty and not a refusal", or a schema validation, or a cheap judge call for high-stakes paths.
+4. **Escalate on rejection,** one tier at a time.
+5. **Watch the escalation rate per tier.** If it climbs, the router is sending queries that are too hard to the small model. You'll see this before average quality moves.
 
 ## When to Use It
 
-- Your workload has a mix of simple and complex queries and you are paying a single-model price for all of them.
-- You have measurable quality criteria that let you verify whether a cheaper model's output is acceptable.
-- Cost reduction of 50%+ would meaningfully change the economics of your product.
-- You can tolerate occasional quality misses on misrouted queries (with fallback to a better model).
+- Your traffic is a mix of easy and hard queries, and you pay one model's price for all of them.
+- You can check answers automatically, at least roughly. Without a check you can't escalate and you can't tell whether the router is working.
+- Inference spend is big enough that halving it matters to someone.
 
-## When not to Use It
+## When NOT to Use It
 
-- All your queries are roughly the same complexity (e.g., a specialized code generation tool where every query is complex). The router adds latency with no cost savings.
-- You cannot measure output quality automatically. Without quality feedback, you cannot validate that cheaper models are performing adequately.
-- Your query volume is low enough that the cost difference is negligible. If you spend less than a few hundred dollars per month on inference, the engineering effort of maintaining a router is not justified.
-- Latency is more critical than cost, and the routing decision itself adds unacceptable overhead.
+- **Every query is hard.** A code-generation agent where every request is a multi-file change gains nothing from routing.
+- **You can't measure quality.** Routing blind means saving money while quality drifts without anyone noticing.
+- **Spend is small.** If inference costs a few hundred dollars a month, a router costs more in engineering time than it saves.
 
 ## Trade-offs
 
-1. **Routing accuracy vs. cost** — Misrouting a complex query to a cheap model produces bad output. Misrouting a simple query to an expensive model wastes money. Finding the balance requires ongoing calibration.
-2. **Added latency** — Any classification step adds latency before the actual inference. Rule-based routers add microseconds; LLM-judge routers add hundreds of milliseconds.
-3. **Maintenance burden** — As models evolve and new tiers appear, the router needs updating. Model capabilities change with each release.
-4. **Quality monitoring dependency** — The router is only as good as your ability to detect when it routes incorrectly. Requires investment in evaluation and feedback loops.
+- **Misroutes go both ways.** A hard query sent to a small model gives a bad answer (escalation catches some of these). An easy query sent to a large model wastes money, and nobody complains about that, so you have to measure it.
+- **Escalation adds latency.** An escalated query pays for two model calls. If more than about 20% of a tier's traffic escalates, that tier's threshold is set too generously.
+- **Model releases move the boundaries.** Each new small model raises what "easy" means, so plan to retune thresholds after every model upgrade.
 
 ## Failure Modes
 
-### Complexity Classifier Drift
-**Trigger**: The query distribution changes (new features, new user segments) but the complexity classifier was trained on historical data.
-**Symptom**: Increasing number of complex queries routed to cheap models. Quality scores drop gradually — hard to notice without per-tier monitoring.
-**Mitigation**: Monitor quality scores per routing tier, not just overall. Retrain or recalibrate the classifier on a rolling window of recent queries.
+**Confidently wrong cheap answers.** The small model gives a fluent, well-formed, wrong answer. The check passes and nobody escalates. Format checks can't catch this. Sample a few percent of small-tier answers, grade them with a stronger model ([LLM-as-Judge](../observability-and-evaluation/llm-as-judge.md)), and track the disagreement rate.
 
-### Cheap Model Confidently Wrong
-**Trigger**: A simple-looking query actually requires world knowledge or nuanced reasoning that the cheap model lacks.
-**Symptom**: The router sends the query to the small model, which returns a confident but incorrect answer. No fallback triggers because the response looks well-formed.
-**Mitigation**: Sample-audit cheap-tier outputs with a stronger model or LLM-as-Judge. Add a confidence threshold where the cheap model's uncertainty triggers escalation.
+**Traffic drift.** A new feature launches and its queries look short and simple but need domain knowledge. The rules were written for last quarter's traffic, so these queries go to the small model. Break down quality and escalation rate by tier *and* by feature, not just overall.
 
-### Tier Collapse Under Load
-**Trigger**: Rate limits hit on the preferred model tier, causing the router to cascade all traffic to a single fallback tier.
-**Symptom**: Either quality drops (all traffic on cheap model) or costs spike (all traffic on expensive model). The router stops providing value.
-**Mitigation**: Implement per-tier rate-limit awareness and queue management. Alert when a tier absorbs abnormal traffic share.
+**Collapse under rate limits.** The small tier hits its provider rate limit, and the fallback logic sends everything to the large tier. Costs jump while the dashboards look green. Alert when a tier's share of traffic moves outside its normal range.
 
 ## Implementation Example
 
+A rule-based router with escalation and per-tier counters. It's a deliberately simple starting point: it's easy to inspect, and the counters give you the labelled data to train something better later.
+
+```bash
+cd examples && pytest inference_and_serving/test_model_router.py
+```
+
+<!-- example: examples/inference_and_serving/model_router.py -->
 ```python
-from dataclasses import dataclass
-from enum import Enum
+"""Model Router.
 
+Send each query to the cheapest model tier that can handle it, and escalate
+when the cheap answer fails a check. Start with rules like these; replace the
+scoring function with a trained classifier once you have labelled traffic.
+"""
 
-class Tier(Enum):
-    SIMPLE = "simple"
-    MEDIUM = "medium"
-    COMPLEX = "complex"
+from __future__ import annotations
+
+import re
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+REASONING_HINTS = re.compile(
+    r"\b(why|explain|compare|trade-?offs?|prove|design|debug|step by step|analy[sz]e|plan)\b", re.I
+)
+CODE_HINTS = re.compile(r"```|def |class |SELECT |stack trace|Traceback", re.I)
 
 
 @dataclass
-class RouteResult:
-    tier: Tier
-    model: str
-    reason: str
+class Tier:
+    name: str
+    model: Callable[[str], str]
+    max_score: float  # this tier takes queries scoring up to this value
 
 
-TIER_MODELS = {
-    Tier.SIMPLE: "gpt-4o-mini",
-    Tier.MEDIUM: "claude-3-5-sonnet-20241022",
-    Tier.COMPLEX: "claude-3-5-opus-20260301",
-}
-
-COMPLEXITY_KEYWORDS = {
-    "analyze", "compare", "synthesize", "evaluate",
-    "multi-step", "trade-off", "architecture", "design",
-}
+def complexity_score(query: str, turns: int = 1) -> float:
+    """0.0 = trivial lookup, 1.0 = hard multi-step reasoning. Crude on purpose."""
+    score = min(len(query.split()) / 200, 0.4)
+    score += 0.25 * min(len(REASONING_HINTS.findall(query)), 2)
+    score += 0.2 if CODE_HINTS.search(query) else 0.0
+    score += 0.1 if turns > 6 else 0.0
+    return min(score, 1.0)
 
 
-def classify_query(query: str, has_context: bool = False) -> RouteResult:
-    words = query.lower().split()
-    word_count = len(words)
-    has_complexity_keywords = bool(set(words) & COMPLEXITY_KEYWORDS)
+@dataclass
+class ModelRouter:
+    tiers: list[Tier]  # cheapest first
+    accept: Callable[[str, str], bool] = lambda query, answer: bool(answer.strip())
+    stats: Counter = field(default_factory=Counter)
 
-    if word_count < 20 and not has_complexity_keywords and not has_context:
-        tier = Tier.SIMPLE
-        reason = "Short query without complexity indicators"
-    elif word_count > 100 or (has_complexity_keywords and has_context):
-        tier = Tier.COMPLEX
-        reason = "Long query with complexity indicators and context"
-    else:
-        tier = Tier.MEDIUM
-        reason = "Moderate complexity"
+    def pick(self, query: str, turns: int = 1) -> int:
+        score = complexity_score(query, turns)
+        for i, tier in enumerate(self.tiers):
+            if score <= tier.max_score:
+                return i
+        return len(self.tiers) - 1
 
-    return RouteResult(
-        tier=tier,
-        model=TIER_MODELS[tier],
-        reason=reason,
-    )
-
-
-async def routed_completion(gateway, query: str, messages: list[dict]) -> dict:
-    route = classify_query(query)
-    return await gateway.chat_completion(
-        model=route.model,
-        messages=messages,
-    )
+    def answer(self, query: str, turns: int = 1) -> tuple[str, str]:
+        """Returns (answer, tier_name). Escalates one tier at a time on rejection."""
+        start = self.pick(query, turns)
+        self.stats[f"routed:{self.tiers[start].name}"] += 1
+        answer = ""
+        for tier in self.tiers[start:]:
+            answer = tier.model(query)
+            if self.accept(query, answer):
+                return answer, tier.name
+            # Track escalations per tier: a rising rate means the router or the
+            # cheap model has drifted, long before average quality moves.
+            self.stats[f"escalated_from:{tier.name}"] += 1
+        return answer, self.tiers[-1].name
 ```
-
-For production systems, replace the rule-based classifier with a trained lightweight model (e.g., a fine-tuned BERT classifier or a logistic regression over query features) and add quality-based feedback to continuously improve routing decisions.
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| Martian | Managed router | ML-based model router with automatic quality monitoring |
-| Unify AI | Managed router | Routes across 100+ models based on quality/cost/latency targets |
-| RouteLLM (Berkeley) | Open-source | Research framework for training LLM routers |
-| Portkey | Gateway with routing | Conditional routing rules at the gateway level |
-| Custom classifier | DIY | Maximum control, requires labeled data and evaluation infrastructure |
+| Tool | Notes |
+|---|---|
+| RouteLLM | Open-source framework and trained routers from LMSYS; good for learning how learned routing works |
+| Not Diamond, Martian | Managed routers that pick a model per prompt |
+| LiteLLM, Portkey | Rule-based and conditional routing at the gateway |
+| OpenRouter | Single API across many models, with fallbacks; you write the routing logic |
 
 ## Related Patterns
 
-- **[LLM Gateway Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/llm-gateway/)** — The gateway executes the routing decision. Router logic often lives inside the gateway.
-- **[Semantic Caching](/AI-Engineering-Patterns/patterns/inference-and-serving/semantic-caching/)** — Check the cache before routing. Cached responses bypass model selection entirely.
-- **[Tiered Model Strategy](/AI-Engineering-Patterns/patterns/cost-and-efficiency/tiered-model-strategy/)** — The broader cost strategy that model routing implements.
-- **[Cost Attribution Pattern](/AI-Engineering-Patterns/patterns/observability/cost-attribution/)** — Measures cost savings from routing to validate the approach.
-- **[Quality Drift Detection](/AI-Engineering-Patterns/patterns/observability/quality-drift-detection/)** — Detects when routing decisions degrade output quality over time.
+- [LLM Gateway](llm-gateway.md) carries out the routing decision. Router logic usually lives inside it.
+- [Semantic Caching](semantic-caching.md) runs first: a cache hit skips routing entirely.
+- [Effort Scaling](../cost-and-efficiency/effort-scaling.md) is the same idea applied to reasoning budget instead of model choice.
+- [LLM-as-Judge](../observability-and-evaluation/llm-as-judge.md) audits whether cheap-tier answers are actually good enough.
 
 ## Further Reading
 
-- [RouteLLM: Learning to Route LLMs with Preference Data (Berkeley, 2024)](https://arxiv.org/abs/2406.18665)
-- [Martian Model Router — How It Works](https://withmartian.com/blog/model-router)
-- [Not All Tokens Are Equal: Cost-Efficient LLM Serving](https://arxiv.org/abs/2404.08865)
+- [RouteLLM: Learning to Route LLMs with Preference Data](https://arxiv.org/abs/2406.18665), Ong et al., 2024
+- [FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance](https://arxiv.org/abs/2305.05176), Chen, Zaharia and Zou, 2023. The original LLM cascade paper.

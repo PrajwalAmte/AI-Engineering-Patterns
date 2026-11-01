@@ -4,211 +4,205 @@ pillar: security-and-trust
 status: validated-in-production
 tags: [security, prompt-injection, pii, input-validation]
 related:
-  - Output Validation Pattern
-  - Schema-Enforced Input Pattern
-  - Structured Output Enforcement
-  - PII Scrubbing Pipeline
+  - Guardrails
+  - Tool Output Firewall
+  - Prompt Mutation Testing
+  - LLM Gateway
+example: examples/security_and_trust/input_sanitization.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-03"
-description: Filter prompt injection, jailbreaks, and PII before queries reach the model.
+last_updated: "2026-11"
+description: Normalize, bound, redact and score user input before it reaches the model. Redaction is reliable; injection detection is only a speed bump.
 sidebar:
   order: 1
 ---
 
 ## What It Is
 
-Input sanitization is a defense layer that inspects, classifies, and transforms user input before it reaches the LLM. It detects and blocks prompt injection attacks, jailbreak attempts, and PII leakage at the input boundary — the same way web applications sanitize form inputs before passing them to a database.
+A pre-processing step on everything a user types, run before it reaches a prompt:
+
+1. **Normalize** Unicode, so look-alike characters and zero-width characters can't hide words.
+2. **Bound** the length.
+3. **Redact** personal data you don't want sent to a provider or written to logs.
+4. **Score** the input for injection attempts: block the obvious ones and flag the suspicious ones.
+
+The first three are dependable engineering. The fourth is useful but limited, and this page says so plainly, because over-trusting injection filters is how teams end up with agents that can be talked into anything.
 
 ## The Problem It Solves
 
-LLMs process user input as part of their prompt. Unlike traditional software where input and instructions are structurally separated, LLMs treat everything as text in the same context window. This creates a fundamental vulnerability:
+Users paste things. Card numbers into a support chat, colleagues' emails into a summarizer, a 200-page contract into a box meant for one question. Without sanitization, all of that goes to a third-party API and into your traces.
 
-- **Prompt injection**: Malicious instructions embedded in user input that override the system prompt ("Ignore previous instructions and...").
-- **Jailbreaks**: Attempts to bypass safety constraints through social engineering, role-playing scenarios, or encoding tricks.
-- **PII in prompts**: Users inadvertently (or intentionally) including personal data that gets sent to external model providers, logged, or used in training.
-
-Without input sanitization, every user query is a potential attack surface.
+Users also attack. Most attacks are copy-pasted: "ignore all previous instructions", fake `system:` lines, role-play setups. Some are disguised with full-width letters or zero-width spaces so a naive regex misses them. A cheap filter catches the copy-pasted majority and gives you a log of who's trying.
 
 ## How It Works
 
 <pre class="mermaid">
-flowchart TD
-    A["User input"] --> B["Length + format validation"]
-    B --> C{"Valid?"}
-    C -->|"No"| X["Reject with safe error"]
-    C -->|"Yes"| D["PII detection and redaction"]
-    D --> E["Prompt-injection detection"]
-    E --> F{"Flagged as adversarial?"}
-    F -->|"Yes"| G["Block, log incident, return safe response"]
-    F -->|"No"| H["Forward sanitized input to model"]
+flowchart LR
+    I["User input"] --> N["NFKC normalize<br/>strip zero-width chars"]
+    N --> L{"Length OK?"}
+    L -->|"no"| B1["Block"]
+    L -->|"yes"| R["Redact PII<br/>(email, SSN, phone, Luhn-valid cards)"]
+    R --> S["Injection score<br/>(weighted signals)"]
+    S -->|"< flag"| A["Allow"]
+    S -->|"flag ≤ score < block"| F["Allow + log for review"]
+    S -->|"≥ block"| B2["Block with a generic message"]
 </pre>
 
-1. **Format validation**: Check input length, encoding, and structure. Reject inputs that exceed token budgets or contain suspicious encoding.
-2. **PII detection**: Scan for patterns matching personal data (emails, phone numbers, SSNs, credit card numbers). Redact or tokenize detected PII before the input moves forward.
-3. **Injection detection**: Classify the input for known injection patterns using one or more methods:
-   - **Pattern matching**: Regular expressions for common injection prefixes ("ignore previous", "system:", delimiter injection).
-   - **Perplexity detection**: Inputs with unusual token distributions may contain injected instructions.
-   - **Classifier model**: A fine-tuned model that classifies inputs as benign or adversarial.
-4. **Decision**: Clean inputs proceed to the model. Flagged inputs are blocked, logged for security review, and the user receives a generic safe response.
+- **Normalize first.** `ｉｇｎｏｒｅ` and `ign​ore` (with a zero-width space) both become `ignore` before any pattern runs.
+- **Redact with validation.** A 16-digit number that fails the Luhn check is an order number, not a card. Redacting it breaks the user's question.
+- **Score, don't match.** Several weak signals add up. "Pretend you are a pirate" alone gets flagged. Combined with "reveal your system prompt", it gets blocked.
+- **Flag before you block.** Flagged inputs are allowed but logged. That log is where you'll find both new attacks and your false positives.
 
 ## When to Use It
 
-- Your system accepts free-text user input that is incorporated into LLM prompts.
-- Your application handles any type of sensitive or personal data.
-- You expose LLM functionality to external or untrusted users.
-- Compliance requirements (GDPR, HIPAA, PCI-DSS) mandate input data handling controls.
+- Free text from users goes into a prompt, which covers nearly every chat or assistant feature.
+- You send data to a third-party model provider and have obligations about personal data.
+- Your model has tools or data access, so a successful injection could do something.
 
-## When not to Use It
+## When NOT to Use It
 
-- The system only processes internal, pre-validated data that never includes user input (batch processing of structured records). Sanitization adds latency to a path that does not need it.
-- You use structured input exclusively (API calls with typed parameters, not free text). Schema validation is more appropriate than text-level sanitization.
-- The LLM has no tools, no access to sensitive data, and no actions beyond text generation in a sandboxed environment. The blast radius of a successful injection is limited to the response text itself.
+- **Structured inputs only.** If the "input" is a typed API payload, validate it against a schema. Text sanitization is the wrong tool.
+- **As your only injection defense.** No input filter stops a determined attacker, and none sees *indirect* injection, which arrives through documents and tool results rather than the chat box. Limit what the model can *do* ([Guardrails](guardrails.md)), and inspect what tools return ([Tool Output Firewall](tool-output-firewall.md)).
 
 ## Trade-offs
 
-1. **False positives** — Aggressive injection detection blocks legitimate queries that happen to contain patterns resembling attacks. "Please ignore the previous error and retry" is a valid user request that matches injection patterns.
-2. **Latency** — Each sanitization step adds processing time. PII detection with NER models can add 10-50ms. Classifier-based injection detection adds more.
-3. **Arms race** — Injection techniques evolve continuously. Pattern-based detection has a short half-life as attackers find new phrasings. Classifier models require ongoing retraining.
-4. **Incomplete coverage** — No sanitization layer catches everything. Sophisticated indirect injection (through retrieved documents, tool outputs, or multi-turn context manipulation) bypasses input-level checks.
+- **False positives cost real users.** "Please ignore the previous error and retry" is a legitimate request. Weighted scoring with separate flag and block thresholds keeps such requests flowing. A single regex that blocks would not.
+- **Redaction can remove the point of the question.** "Why was my card ending 4242 charged twice?" may need the last four digits. Decide per field what to keep, mask or remove.
+- **Patterns age.** Attack phrasing changes. Review flagged inputs periodically and update the signals, or add a hosted classifier.
 
 ## Failure Modes
 
-### Regex-Based Detection Bypass
-**Trigger**: Attacker uses Unicode homoglyphs, zero-width characters, or language switching to evade pattern-based injection detection.
-**Symptom**: Injection passes all regex filters and reaches the model. The attack is only discovered post-hoc through output monitoring or user reports.
-**Mitigation**: Normalize Unicode before pattern matching. Layer a classifier-based detector on top of regex rules. Treat pattern matching as the first line of defense, not the only one.
+**Obfuscation bypass.** Homoglyphs, zero-width characters, base64 and "translate this from French" tricks get past pattern filters. Normalization handles the first two. Nothing in this layer reliably handles the rest, which is why it can't be your only defense.
 
-### Overzealous PII Detection
-**Trigger**: PII detection model flags domain-specific identifiers (product codes, internal IDs, medical terms) as personally identifiable information.
-**Symptom**: Legitimate queries are blocked or have critical information redacted, producing useless model responses. Users complain about "the AI not understanding my question."
-**Mitigation**: Fine-tune PII detection on domain-specific data. Maintain an allow-list of known entity patterns. Log false positives and review weekly.
+**Multi-turn assembly.** Each message is harmless on its own, and together they form an injection. Score the recent conversation window as well as the latest message.
 
-### Multi-Turn Context Accumulation
-**Trigger**: An attacker spreads a malicious instruction across multiple turns of conversation, each turn individually benign.
-**Symptom**: Per-message sanitization passes every turn, but the concatenated context assembles a complete injection. The attack is invisible to single-turn analysis.
-**Mitigation**: Run injection detection on the full accumulated context periodically, not just the latest message. Set a context window sanitization interval.
+**Redaction in the wrong place.** PII is redacted before the model call but logged raw by middleware that runs earlier. Put sanitization at the very first hop, usually the gateway.
 
 ## Implementation Example
 
+Unicode normalization, a length limit, PII redaction with a Luhn check, weighted injection signals, and allow / flag / block thresholds. The tests include the bypass tricks and the false-positive case ("ignore the previous error").
+
+```bash
+cd examples && pytest security_and_trust/test_input_sanitization.py
+```
+
+<!-- example: examples/security_and_trust/input_sanitization.py -->
 ```python
+"""Input Sanitization.
+
+Normalise, bound, redact, and score user input before it reaches the model.
+
+Be clear about what this buys you. PII redaction and length limits are
+reliable. Injection *detection* is a speed bump: it stops the copy-pasted
+attacks and gives you a signal to log, but a determined attacker will get
+past any filter. The real defence is limiting what a successful injection can
+do (see Guardrails and Tool Output Firewall).
+"""
+
+from __future__ import annotations
+
 import re
-from dataclasses import dataclass
-from enum import Enum
+import unicodedata
+from dataclasses import dataclass, field
+
+ZERO_WIDTH = dict.fromkeys(map(ord, "​‌‍⁠﻿"), None)
+
+PII = {
+    "EMAIL": re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
+    "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    "PHONE": re.compile(r"(?<!\d)\+?\d{1,2}[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)"),
+    "CARD": re.compile(r"\b(?:\d[ -]?){13,19}\b"),
+}
+
+INJECTION_SIGNALS = [
+    (re.compile(r"ignore (all )?(your |the )?(previous|prior|above) (instructions|rules|prompt)", re.I), 0.6),
+    (re.compile(r"(reveal|print|show|repeat) (your |the )?(system prompt|instructions|hidden prompt)", re.I), 0.5),
+    (re.compile(r"\byou are now\b|\bpretend (you are|to be)\b|\bact as\b.*\bno restrictions\b", re.I), 0.4),
+    (re.compile(r"^\s*(system|assistant)\s*:", re.I | re.M), 0.4),
+    (re.compile(r"</?(system|instructions?)>|\[/?INST\]", re.I), 0.4),
+    (re.compile(r"\bDAN\b|developer mode|jailbreak", re.I), 0.3),
+]
 
 
-class ThreatLevel(Enum):
-    CLEAN = "clean"
-    PII_DETECTED = "pii_detected"
-    INJECTION_SUSPECTED = "injection_suspected"
-    BLOCKED = "blocked"
+def _luhn_ok(digits: str) -> bool:
+    total, parity = 0, len(digits) % 2
+    for i, ch in enumerate(digits):
+        d = int(ch)
+        if i % 2 == parity:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
 
 
 @dataclass
-class SanitizationResult:
-    threat_level: ThreatLevel
-    sanitized_input: str
-    detections: list[str]
-    original_length: int
+class Sanitized:
+    text: str
+    action: str  # "allow" | "flag" | "block"
+    injection_score: float
+    redactions: dict[str, int] = field(default_factory=dict)
+    reasons: list[str] = field(default_factory=list)
 
 
-PII_PATTERNS = {
-    "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
-    "ssn": re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b"),
-    "phone": re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
-    "credit_card": re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b"),
-}
-
-INJECTION_PATTERNS = [
-    re.compile(r"ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions", re.I),
-    re.compile(r"disregard\s+(?:all\s+)?(?:previous|prior|your)\s+instructions", re.I),
-    re.compile(r"you\s+are\s+now\s+(?:a|an)\s+", re.I),
-    re.compile(r"new\s+instruction[s]?\s*:", re.I),
-    re.compile(r"system\s*(?:prompt|message)\s*:", re.I),
-    re.compile(r"\[INST\]|\[/INST\]|<<SYS>>|<\|im_start\|>", re.I),
-    re.compile(r"```\s*system", re.I),
-]
-
-MAX_INPUT_LENGTH = 10000
-REDACTION_PLACEHOLDER = "[REDACTED]"
+def normalize(text: str) -> str:
+    # NFKC folds full-width and many look-alike characters; zero-width chars
+    # are a favourite way to split "ignore" so a regex misses it.
+    return unicodedata.normalize("NFKC", text).translate(ZERO_WIDTH)
 
 
-def sanitize_input(text: str) -> SanitizationResult:
-    detections: list[str] = []
-    original_length = len(text)
-    sanitized = text
+def redact(text: str) -> tuple[str, dict[str, int]]:
+    counts: dict[str, int] = {}
 
-    if len(text) > MAX_INPUT_LENGTH:
-        return SanitizationResult(
-            threat_level=ThreatLevel.BLOCKED,
-            sanitized_input="",
-            detections=[f"Input exceeds maximum length: {len(text)} > {MAX_INPUT_LENGTH}"],
-            original_length=original_length,
-        )
+    def sub(kind: str, pattern: re.Pattern, s: str) -> str:
+        def repl(m: re.Match) -> str:
+            if kind == "CARD" and not _luhn_ok(re.sub(r"\D", "", m.group())):
+                return m.group()  # an order number, not a card
+            counts[kind] = counts.get(kind, 0) + 1
+            return f"[{kind}]"
 
-    for pii_type, pattern in PII_PATTERNS.items():
-        matches = pattern.findall(sanitized)
-        if matches:
-            detections.append(f"{pii_type}: {len(matches)} instance(s) redacted")
-            sanitized = pattern.sub(REDACTION_PLACEHOLDER, sanitized)
+        return pattern.sub(repl, s)
 
-    for pattern in INJECTION_PATTERNS:
-        if pattern.search(sanitized):
-            detections.append(f"Injection pattern detected: {pattern.pattern[:50]}")
-            return SanitizationResult(
-                threat_level=ThreatLevel.INJECTION_SUSPECTED,
-                sanitized_input="",
-                detections=detections,
-                original_length=original_length,
-            )
-
-    if any("redacted" in d for d in detections):
-        threat_level = ThreatLevel.PII_DETECTED
-    else:
-        threat_level = ThreatLevel.CLEAN
-
-    return SanitizationResult(
-        threat_level=threat_level,
-        sanitized_input=sanitized,
-        detections=detections,
-        original_length=original_length,
-    )
+    for kind in ("EMAIL", "SSN", "CARD", "PHONE"):  # card before phone: long digit runs
+        text = sub(kind, PII[kind], text)
+    return text, counts
 
 
-def enforce_sanitization(text: str) -> str:
-    result = sanitize_input(text)
+def injection_score(text: str) -> tuple[float, list[str]]:
+    score, reasons = 0.0, []
+    for pattern, weight in INJECTION_SIGNALS:
+        if pattern.search(text):
+            score += weight
+            reasons.append(pattern.pattern[:40])
+    return min(score, 1.0), reasons
 
-    if result.threat_level == ThreatLevel.BLOCKED:
-        raise ValueError("Input blocked by sanitization policy")
 
-    if result.threat_level == ThreatLevel.INJECTION_SUSPECTED:
-        raise ValueError("Input blocked: potential prompt injection detected")
-
-    return result.sanitized_input
+def sanitize(text: str, max_chars: int = 8000, flag_at: float = 0.4, block_at: float = 0.8) -> Sanitized:
+    text = normalize(text)
+    if len(text) > max_chars:
+        return Sanitized(text[:max_chars], "block", 0.0, reasons=[f"input longer than {max_chars} chars"])
+    text, redactions = redact(text)
+    score, reasons = injection_score(text)
+    action = "block" if score >= block_at else "flag" if score >= flag_at else "allow"
+    return Sanitized(text, action, score, redactions, reasons)
 ```
-
-For production systems, complement pattern-based detection with a trained classifier (e.g., a fine-tuned model on prompt injection datasets) and use a dedicated PII detection library (Presidio, Phileas) for higher accuracy across entity types and languages.
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| Presidio | Open-source (Microsoft) | PII detection and anonymization with pluggable NER backends |
-| LLM Guard | Open-source | Input/output sanitization specifically designed for LLM applications |
-| Rebuff | Open-source | Prompt injection detection using multiple detection strategies |
-| Lakera Guard | Managed API | Real-time prompt injection and content moderation |
-| NVIDIA NeMo Guardrails | Open-source | Programmable guardrails for LLM applications |
+| Tool | Notes |
+|---|---|
+| Microsoft Presidio | Open-source PII detection and anonymization (regex + NER) |
+| Llama Prompt Guard, ProtectAI deberta injection classifier | Open models that classify injection and jailbreak attempts |
+| Lakera Guard, Azure Prompt Shields | Hosted injection and jailbreak detection APIs |
+| LLM Guard | Open-source input and output scanners bundled together |
 
 ## Related Patterns
 
-- **[Output Validation Pattern](/AI-Engineering-Patterns/patterns/security-and-trust/output-validation/)** — Sanitize inputs before the model; validate outputs after. Both layers are needed.
-- **[Schema-Enforced Input Pattern](/AI-Engineering-Patterns/patterns/security-and-trust/schema-enforced-input/)** — Replace free text with structured input to eliminate injection surface entirely.
-- **[Structured Output Enforcement](/AI-Engineering-Patterns/patterns/security-and-trust/structured-output-enforcement/)** — Constrain outputs to match a schema. Complements input sanitization.
-- **[PII Scrubbing Pipeline](/AI-Engineering-Patterns/patterns/security-and-trust/pii-scrubbing/)** — Dedicated PII handling for data that flows into training and logging pipelines.
-- **[Audit Trail Pattern](/AI-Engineering-Patterns/patterns/security-and-trust/audit-trail/)** — Log sanitization decisions for incident investigation and compliance.
+- [Guardrails](guardrails.md) cover the output side and limit the damage when an injection gets through.
+- [Tool Output Firewall](tool-output-firewall.md) handles the side door: injections inside documents and tool results.
+- [Prompt Mutation Testing](../observability-and-evaluation/prompt-mutation-testing.md) checks whether your defenses hold under rephrasing.
+- [LLM Gateway](../inference-and-serving/llm-gateway.md) is the right place for this to run, once for every caller.
 
 ## Further Reading
 
-- [OWASP Top 10 for LLM Applications](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
-- [Prompt Injection — Simon Willison](https://simonwillison.net/series/prompt-injection/)
-- [Microsoft Presidio — PII Detection Documentation](https://microsoft.github.io/presidio/)
-- [Not What You've Signed Up For: Compromising Real-World LLM-Integrated Applications with Indirect Prompt Injection (Greshake et al., 2023)](https://arxiv.org/abs/2302.12173)
+- [OWASP Top 10 for LLM Applications: LLM01 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
+- [Prompt injection explained](https://simonwillison.net/2023/May/2/prompt-injection-explained/), Simon Willison. Why filtering can't fully solve it.
+- [Microsoft Presidio](https://microsoft.github.io/presidio/)

@@ -2,265 +2,223 @@
 title: Human-in-the-Loop
 pillar: governance
 status: validated-in-production
-tags: [human-approval, safety, governance, confirmation, oversight]
+tags: [governance, approval, agents, safety, audit]
 related:
-  - Circuit Breaker for LLMs
-  - Input Sanitization
+  - Guardrails
   - Tool Output Firewall
-contributors: ["@pattern-architect"]
-last_updated: "2026-07"
-description: Require explicit human approval before agents execute consequential or irreversible actions, enforcing safety boundaries through infrastructure-level gates rather than model discretion.
+  - Model Card
+  - Effort Scaling
+example: examples/governance/human_in_the_loop.py
+contributors: ["@PrajwalAmte"]
+last_updated: "2026-11"
+description: An approval gate in the tool-execution layer. Low-risk actions run, consequential ones wait for a person who can approve, edit or deny, and silence means no.
 sidebar:
-  order: 4
+  order: 1
 ---
 
 ## What It Is
 
-Human-in-the-Loop (HITL) is a governance pattern that pauses agent execution before consequential actions and requests explicit user confirmation. The system defines a set of action categories that require human approval (e.g., sending emails, modifying data, making API calls with side effects), enforces these gates at the infrastructure level, and does not permit the agent to proceed until the user provides consent. This transforms the agent from an autonomous actor into a supervised assistant with bounded authority.
+Before an agent's tool call executes, a gate classifies it by risk:
+
+- **Auto**: read-only or trivially reversible. It runs immediately.
+- **Approve**: consequential (sends something, changes something, costs something). It waits for a person.
+- **Forbid**: never allowed in this context, whoever approves.
+
+The approver sees what the agent wants to do, and why, and can approve it, edit the arguments first, or deny it. A denial goes back to the agent as a tool result so it can change its plan. An approval request that times out is a denial.
+
+The essential detail is *where* the gate lives: in the code that executes tools, not in the prompt. "Always ask before sending email" in a system prompt is a request. A gate in the executor is a guarantee.
 
 ## The Problem It Solves
 
-Fully autonomous agents operating without human oversight can cause costly, embarrassing, or dangerous failures. Without HITL gates, you face:
+Agents make plausible mistakes with real consequences: the email goes to the wrong customer, the refund is 10× too large, the cleanup script deletes the wrong directory. And with tool output from the web or user content in context, the agent might not even be pursuing *your* goal ([Tool Output Firewall](../security-and-trust/tool-output-firewall.md)).
 
-- **Irreversible errors** — Agents delete files, send emails to wrong recipients, make unauthorized API calls, or modify production data based on misunderstood instructions or hallucinated context
-- **Runaway costs** — An agent stuck in a tool-call loop spawns hundreds of expensive API calls before anyone notices, or launches cloud resources that accrue charges indefinitely
-- **Compliance violations** — Agents access sensitive data or perform regulated actions (financial transactions, healthcare records access) without proper authorization audit trails
-- **User trust erosion** — A single high-profile agent mistake (sending a message to the wrong person, deleting important content) destroys user confidence in the entire system
+Asking for approval on *everything* fails differently. People approve without reading after the twentieth prompt, so the gate becomes a formality. The goal is to ask rarely, for the actions that matter, and make each request easy to judge.
 
 ## How It Works
 
-1. **Action classification** — Define categories of actions as "consequential" based on criteria: irreversibility (cannot be undone), external effects (visible to others), cost thresholds (>$X or >N API calls), or regulatory requirements (requires audit trail).
-
-2. **Infrastructure-level gate** — Implement HITL checkpoints at the tool execution layer, not in the model prompt. When an agent attempts to invoke a classified action, the system intercepts the call before execution.
-
-3. **User notification** — Present the proposed action to the user with context: what the agent wants to do, why (based on its reasoning), what the consequences will be, and what alternatives exist (if any).
-
-4. **Explicit confirmation required** — The user must explicitly approve (yes/no) or provide a modified instruction. The system does not proceed on timeout or default to approval.
-
-5. **Permission persistence (optional)** — For repeated actions within a session, offer users the option to grant one-time vs. persistent permission (e.g., "allow all file writes for this task" vs. "ask each time").
-
-6. **Action execution or alternative path** — On approval, the action executes and the agent continues. On denial, the agent receives a refusal signal and must adapt its plan (try a different tool, ask the user for guidance, or terminate gracefully).
-
-```mermaid
+<pre class="mermaid">
 sequenceDiagram
-    participant U as User
     participant A as Agent
-    participant G as HITL Gate
-    participant T as Tool/Action
-    participant L as Audit Log
-
-    U->>A: Task request
-    A->>A: Reason about plan
-    A->>G: Attempt consequential action\n(e.g., send email)
-    
-    alt Action is consequential
-        G->>U: "Agent wants to send email to X.\nSubject: Y. Approve?"
-        U->>G: User decision\n(approve / deny / modify)
-        G->>L: Log decision + context
-        
-        alt Approved
-            G->>T: Execute action
-            T-->>G: Result
-            G-->>A: Action succeeded
-        else Denied
-            G-->>A: Action denied by user
-            A->>A: Adapt plan or ask for guidance
+    participant G as Gate (tool executor)
+    participant H as Human
+    participant T as Tool
+    A->>G: tool call + reason
+    G->>G: classify risk
+    alt auto, or granted for this session
+        G->>T: execute
+    else forbid
+        G-->>A: ACTION NOT TAKEN (forbidden)
+    else approve
+        G->>H: "Agent wants to send_email to X because Y"
+        alt approves (maybe with edits)
+            H-->>G: approve
+            G->>T: execute with final args
+        else denies, or no answer before timeout
+            G-->>A: ACTION NOT TAKEN (reason)
         end
-    else Not consequential
-        G->>T: Execute directly
-        T-->>G: Result
-        G-->>A: Action succeeded
     end
-```
+    G->>G: audit log entry
+</pre>
+
+1. **Classify by consequence, not by tool name alone.** A $15 refund and a $1,500 refund are the same tool with very different risk. Thresholds on arguments belong in the classifier.
+2. **Show enough to decide.** Include the action, the exact arguments, and the agent's stated reason. An approver who has to dig for context will just click approve.
+3. **Allow edits.** "Yes, but $50, not $500" is a common and valuable answer.
+4. **Fail closed on timeout.** No answer means no action.
+5. **Offer scoped session grants** ("allow file writes in this repo for this task") to cut repeated prompts without granting permanent permission.
+6. **Audit everything:** what was proposed, by which agent, who decided, what actually ran.
 
 ## When to Use It
 
-- Agents have access to tools with external side effects: sending messages, modifying databases, making purchases, deploying infrastructure
-- Irreversible actions are possible: deleting data, publishing content publicly, making financial transactions
-- Regulatory or compliance requirements mandate human oversight: healthcare (HIPAA), finance (SOX), data privacy (GDPR right to human review)
-- Agent reliability is not yet production-grade: early deployments where hallucination rates or tool-use errors remain significant
-- User trust is fragile: new product categories where a single mistake will cause users to abandon the system entirely
-- Cost runaway risk exists: tools that can spawn expensive resources or make repeated billable API calls
+- Agents with write access to anything that matters: email, payments, production systems, customer records.
+- Irreversible or externally visible actions.
+- Regulated decisions where a named person must be accountable.
 
 ## When NOT to Use It
 
-- **Latency is critical and actions are low-risk** — If the agent performs benign actions (searching, reading, summarizing) where delays hurt UX and mistakes are trivial, HITL adds friction for no benefit
-- **Actions are fully reversible and low-cost** — If every action can be undone easily (e.g., draft creation, local file edits with version control), requiring approval on every step makes the system unusable
-- **Batch or background processing** — If the agent runs unattended (e.g., overnight data pipeline, scheduled report generation), HITL breaks the workflow since no human is present to approve
-- **High-frequency, repetitive actions** — If the agent must make hundreds of similar decisions (e.g., tagging images, approving routine transactions), per-action approval is impractical; use statistical sampling or batch approval instead
-- **The action is non-consequential** — Read-only queries, retrieving public data, generating drafts that are not published — these do not require HITL
+- **Read-only agents.** If the worst outcome is a wrong answer on screen, approval prompts are friction without a benefit.
+- **High-volume, low-stakes actions.** Tagging tickets, drafting (not sending) replies. Sample them for review afterwards instead.
+- **As a fix for an agent that's wrong too often.** If approvers reject 30% of proposals, fix the agent. Approval doesn't scale as a quality filter.
 
 ## Trade-offs
 
-1. **Safety and compliance vs. latency and friction** — HITL prevents catastrophic mistakes and creates audit trails for compliance. The cost is that every consequential action now requires a human round-trip, adding seconds to minutes of delay. For systems where errors are expensive (financial, healthcare, legal), this trade-off is mandatory. For low-risk applications (personal productivity, creative tools), HITL can make the system feel slow and tedious.
-
-2. **Infrastructure enforcement vs. prompt-based requests** — Implementing HITL at the tool execution layer (intercepting API calls before they execute) is robust: even a jailbroken or misbehaving model cannot bypass it. The cost is engineering complexity: you must instrument every tool, maintain a permission model, and handle approval workflows. Prompt-based HITL (asking the model to request confirmation) is simpler to implement but vulnerable: a sufficiently capable model reasoning "this is urgent, I should proceed" can override the rule.
-
-3. **Granular control vs. user fatigue** — Fine-grained permissions (approve every email, every file write, every API call) give users maximum control. The trade-off is approval fatigue: users start clicking "yes" without reading, defeating the safety purpose. Coarse-grained permissions (approve all file writes for this session) reduce fatigue but increase blast radius if the user mistakenly grants broad access.
-
-4. **Session-scoped vs. permanent permissions** — Allowing users to grant persistent permissions (e.g., "always allow this agent to send Slack messages") reduces friction across sessions. The risk is that users forget they granted broad access, or their threat model changes (e.g., a malicious prompt injection occurs weeks later) and the stale permission is still active. Session-scoped permissions are safer but require re-approval on every new conversation.
+- **Latency measured in human time.** An agent waiting for approval can take minutes or hours. Design flows so the agent can carry on with other work, or end the turn cleanly, while it waits.
+- **Approval fatigue.** Every unnecessary prompt makes the necessary ones less likely to be read. Track approval rates. A tool approved 99.9% of the time with no edits is a candidate for auto.
+- **The classifier is a policy.** Someone has to own "what counts as consequential", and review it as tools are added.
 
 ## Failure Modes
 
-| Trigger | Symptom | Mitigation |
-|---------|---------|-----------|
-| Overly broad "consequential" classification | Every action requires approval; users abandon the agent due to excessive friction | Classify only truly irreversible or high-impact actions as consequential; allow undo/rollback for lower-risk actions instead of blocking them |
-| User confusion at approval prompts | Users don't understand what they're approving; click yes without reading | Provide clear context: what will happen, why the agent needs this, what the alternatives are; show a preview of consequences |
-| Approval fatigue | Users approve actions reflexively after seeing many prompts; safety gate becomes security theater | Batch similar actions for single approval ("approve 5 file writes?"); use session-scoped permissions for repeated tasks |
-| Agent stalls on denial | User denies action; agent has no fallback plan and terminates or retries infinitely | Train agent to ask for guidance on denial ("I can't send the email. Should I save a draft instead?"); implement max-retry limits |
-| Permission creep | Users grant permanent permissions broadly; over time the agent accumulates excessive authority | Default to session-scoped permissions; periodically re-prompt users to review and revoke stale grants |
-| No audit trail | Actions are approved but not logged; compliance teams cannot reconstruct what happened or who approved it | Log every approval/denial with: timestamp, user ID, agent ID, action details, and user's decision; retain for compliance period |
+**Rubber-stamping.** Approvers see 40 requests a day and approve them all in two seconds. Cut volume (auto-approve proven-safe actions), make requests easier to read, and spot-check that approvers catch planted bad requests.
+
+**The gate lives in the prompt.** The agent is *told* to ask before acting, and a jailbreak or a confused plan skips the asking. The gate must be in the code path that executes the tool.
+
+**Timeout defaults to yes.** "If nobody answers in 5 minutes, proceed" turns the gate into a delay. Default to no, and tell the user what's waiting.
 
 ## Implementation Example
 
-```python
-from anthropic import Anthropic
-from typing import Callable, Dict, Any
-import json
+A risk classifier (auto / approve / forbid, with argument thresholds), an approval wait with a timeout that denies, approval with edited arguments, session-scoped grants, denials returned to the agent as tool results, and an audit trail.
 
-class HITLGate:
-    """Human-in-the-Loop gate for consequential actions."""
-    
-    def __init__(self):
-        self.consequential_actions = {
-            "send_email", "delete_file", "make_payment", "publish_content"
-        }
-        self.session_approvals = {}  # Track session-scoped permissions
-    
-    def is_consequential(self, tool_name: str) -> bool:
-        """Check if this action requires human approval."""
-        return tool_name in self.consequential_actions
-    
-    def request_approval(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
-        """Present action to user and request approval."""
-        print(f"\n⚠️  APPROVAL REQUIRED")
-        print(f"Action: {tool_name}")
-        print(f"Arguments: {json.dumps(arguments, indent=2)}")
-        print("\nOptions:")
-        print("  1. Approve (just this once)")
-        print("  2. Approve (for this entire session)")
-        print("  3. Deny")
-        
-        choice = input("\nYour choice (1/2/3): ").strip()
-        
-        if choice == "1":
-            print("✅ Action approved (one-time)")
-            return True
-        elif choice == "2":
-            self.session_approvals[tool_name] = True
-            print(f"✅ Action approved (session-wide for {tool_name})")
-            return True
-        else:
-            print("❌ Action denied")
-            return False
-    
-    def execute_with_gate(self, tool_name: str, arguments: Dict[str, Any], 
-                         tool_impl: Callable) -> Any:
-        """Execute tool with HITL gate if consequential."""
-        # Check if we have session-wide approval
-        if tool_name in self.session_approvals:
-            print(f"✓ Using session approval for {tool_name}")
-            return tool_impl(**arguments)
-        
-        # Check if action is consequential
-        if self.is_consequential(tool_name):
-            approved = self.request_approval(tool_name, arguments)
-            if not approved:
-                raise PermissionError(f"User denied action: {tool_name}")
-        
-        # Execute the action
-        return tool_impl(**arguments)
-
-
-# Example tool implementations
-def send_email(to: str, subject: str, body: str) -> str:
-    """Simulate sending an email (consequential action)."""
-    print(f"📧 Sending email to {to}...")
-    return f"Email sent to {to}"
-
-def search_documents(query: str) -> str:
-    """Search documents (non-consequential action)."""
-    print(f"🔍 Searching for: {query}")
-    return f"Found 3 documents matching '{query}'"
-
-
-# Agent with HITL
-class SafeAgent:
-    def __init__(self, client: Anthropic):
-        self.client = client
-        self.gate = HITLGate()
-        self.tools = {
-            "send_email": send_email,
-            "search_documents": search_documents
-        }
-    
-    def execute_tool(self, tool_name: str, arguments: Dict) -> str:
-        """Execute a tool through the HITL gate."""
-        tool_impl = self.tools.get(tool_name)
-        if not tool_impl:
-            return f"Error: Unknown tool {tool_name}"
-        
-        try:
-            result = self.gate.execute_with_gate(tool_name, arguments, tool_impl)
-            return str(result)
-        except PermissionError as e:
-            return f"Action denied by user: {e}"
-    
-    def run(self, user_request: str) -> str:
-        """Run agent with HITL protection."""
-        # Simplified: In production, this would be a full agent loop
-        print(f"\n🤖 Agent processing: {user_request}")
-        
-        # Simulate agent deciding to send email
-        if "send" in user_request.lower() and "email" in user_request.lower():
-            result = self.execute_tool("send_email", {
-                "to": "user@example.com",
-                "subject": "Hello",
-                "body": "This is a test email"
-            })
-            return result
-        else:
-            result = self.execute_tool("search_documents", {"query": user_request})
-            return result
-
-
-# Usage
-client = Anthropic(api_key="your-api-key")
-agent = SafeAgent(client)
-
-# Non-consequential action: executes immediately
-agent.run("search for quarterly reports")
-
-# Consequential action: requires approval
-agent.run("send email to the team")
+```bash
+cd examples && pytest governance/test_human_in_the_loop.py
 ```
+
+<!-- example: examples/governance/human_in_the_loop.py -->
+```python
+"""Human-in-the-Loop.
+
+An approval gate in the tool-execution layer, not in the prompt. Each action
+is classified by risk; low-risk actions run, high-risk ones wait for a human
+who can approve, edit or deny; some actions are never allowed. Silence is a
+"no": an approval that times out is denied.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class Risk(Enum):
+    AUTO = "auto"  # read-only or trivially reversible
+    APPROVE = "approve"  # consequential: needs a human
+    FORBID = "forbid"  # never, regardless of approval
+
+
+@dataclass
+class Action:
+    tool: str
+    args: dict
+    reason: str  # the agent's stated reason, shown to the approver
+
+
+@dataclass
+class Decision:
+    approved: bool
+    args: dict | None = None  # approver may edit arguments before approving
+    by: str = ""
+    note: str = ""
+
+
+Approver = Callable[[Action], Decision | None]  # None = no answer yet
+
+
+@dataclass
+class Gate:
+    classify: Callable[[Action], Risk]
+    ask: Approver
+    timeout_s: float = 300.0
+    poll_s: float = 0.0
+    clock: Callable[[], float] = time.monotonic
+    session_grants: set[str] = field(default_factory=set)  # "allow X for this task"
+    audit: list[dict] = field(default_factory=list)
+
+    def run(self, action: Action, execute: Callable[[str, dict], str]) -> str:
+        risk = self.classify(action)
+        if risk is Risk.FORBID:
+            return self._done(action, risk, "denied", "forbidden action")
+        if risk is Risk.AUTO or action.tool in self.session_grants:
+            return self._done(action, risk, "auto", execute(action.tool, action.args))
+
+        decision = self._wait(action)
+        if decision is None:
+            return self._done(action, risk, "denied", "no response before timeout")
+        if not decision.approved:
+            return self._done(action, risk, "denied", f"denied by {decision.by}: {decision.note}")
+        args = decision.args if decision.args is not None else action.args
+        return self._done(action, risk, f"approved by {decision.by}", execute(action.tool, args), args)
+
+    def grant_for_session(self, tool: str) -> None:
+        self.session_grants.add(tool)
+
+    def _wait(self, action: Action) -> Decision | None:
+        deadline = self.clock() + self.timeout_s
+        while self.clock() < deadline:
+            decision = self.ask(action)
+            if decision is not None:
+                return decision
+            if self.poll_s:
+                time.sleep(self.poll_s)
+        return None
+
+    def _done(self, action: Action, risk: Risk, outcome: str, result: str, args: dict | None = None) -> str:
+        self.audit.append(
+            {"tool": action.tool, "args": args or action.args, "reason": action.reason, "risk": risk.value,
+             "outcome": outcome}
+        )
+        # The agent sees denials as tool results and has to adapt its plan.
+        return result if not outcome.startswith("denied") else f"ACTION NOT TAKEN: {result}"
+
+
+def default_classifier(action: Action) -> Risk:
+    if action.tool in {"drop_table", "delete_account", "transfer_funds"}:
+        return Risk.FORBID
+    if action.tool.startswith(("get_", "search_", "read_", "list_")):
+        return Risk.AUTO
+    if action.tool == "issue_refund" and action.args.get("amount", 0) <= 20:
+        return Risk.AUTO  # small refunds are cheaper to allow than to review
+    return Risk.APPROVE
+```
+<!-- /example -->
 
 ## Tool Landscape
 
-**Agent frameworks with built-in HITL:**
-- Anthropic Model Context Protocol (MCP) — one-time vs. permanent permission grants per tool
-- OpenAI Agents SDK — output guardrails can block and request human review
-- LangChain — human-in-the-loop tool wrappers and approval callbacks
-- AutoGen (Microsoft) — `UserProxyAgent` pattern for human approval
+| Tool | Notes |
+|---|---|
+| LangGraph `interrupt` | Pause a graph for human input and resume from a checkpoint |
+| OpenAI Agents SDK, Claude Agent SDK | Tool approval hooks and permission modes |
+| MCP clients | Per-tool confirmation in hosts such as Claude Desktop and IDEs |
+| Temporal / workflow engines | Durable waits for long approval cycles |
 
-**Enterprise governance platforms:**
-- Microsoft Copilot Studio — admin-defined action approval policies
-- Salesforce Einstein — human review queues for high-impact agent actions
-- Google Vertex AI — Model Monitoring with human review triggers
+## Related Patterns
 
-**Workflow and approval systems:**
-- Temporal — durable workflow with human approval steps
-- Inngest — event-driven functions with manual approval gates
-- AWS Step Functions — human approval tasks in state machines
-
-**Audit and compliance logging:**
-- Vanta — compliance evidence collection for agent actions
-- Drata — automated audit trail capture with human approval records
-- OneTrust — consent management and audit workflows
+- [Guardrails](../security-and-trust/guardrails.md): the tool policy there decides what needs approval, and this pattern handles the approving.
+- [Tool Output Firewall](../security-and-trust/tool-output-firewall.md): after untrusted content enters the context, raise the approval level.
+- [Model Card](model-card.md) documents the oversight setup for auditors.
+- [Effort Scaling](../cost-and-efficiency/effort-scaling.md): larger budgets for autonomous work usually mean more actions that need approval.
 
 ## Further Reading
 
-1. [Our framework for developing safe and trustworthy agents — Anthropic, August 2025](https://www.anthropic.com/news/our-framework-for-developing-safe-and-trustworthy-agents)
-2. [Human-in-the-Loop Machine Learning — Monarch, 2021](https://www.manning.com/books/human-in-the-loop-machine-learning)
-3. [Model Context Protocol — Permissions and Safety, Anthropic 2024](https://modelcontextprotocol.io/docs/concepts/permissions)
-4. [OpenAI Agents SDK Guardrails Documentation, 2025](https://platform.openai.com/docs/agents/guardrails)
+- [Our framework for developing safe and trustworthy agents](https://www.anthropic.com/news/our-framework-for-developing-safe-and-trustworthy-agents), Anthropic, 2025
+- [LangGraph human-in-the-loop concepts](https://langchain-ai.github.io/langgraph/concepts/human_in_the_loop/)
+- [OWASP LLM06: Excessive Agency](https://genai.owasp.org/llmrisk/llm062025-excessive-agency/)

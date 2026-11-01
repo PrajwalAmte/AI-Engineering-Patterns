@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { caseStudies } from '@/.velite'
 
 export const metadata = {
-  title: 'Case Studies | AI Engineering Patterns',
+  title: 'Case Studies',
   description: 'Real-world applications of AI engineering patterns.',
 }
 

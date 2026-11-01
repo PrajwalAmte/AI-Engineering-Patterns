@@ -3,7 +3,7 @@
   "title": "Pattern Frontmatter",
   "description": "Schema for Production AI Patterns frontmatter validation",
   "type": "object",
-  "required": ["title", "pillar", "status", "tags"],
+  "required": ["title", "pillar", "status", "tags", "example"],
   "properties": {
     "title": {
       "type": "string",
@@ -41,6 +41,11 @@
       "minItems": 1,
       "maxItems": 10,
       "description": "Lowercase hyphenated tags for categorization"
+    },
+    "example": {
+      "type": "string",
+      "pattern": "^examples/[a-z_]+/[a-z_]+\\.py$",
+      "description": "Repo-relative path to the runnable, tested reference implementation"
     },
     "related": {
       "type": "array",

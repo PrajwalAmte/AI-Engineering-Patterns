@@ -1,0 +1,36 @@
+name: New pattern
+description: Propose a pattern that isn't in the library yet
+labels: ["new-pattern"]
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Pattern name
+      description: If this technique already has a common name, use it.
+    validations:
+      required: true
+  - type: dropdown
+    id: pillar
+    attributes:
+      label: Pillar
+      options: [inference-and-serving, retrieval-and-memory, data-patterns, reliability, observability-and-evaluation, security-and-trust, cost-and-efficiency, governance, graph-patterns, loop-engineering]
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What goes wrong without it?
+      description: A concrete scenario beats a definition.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Where is it used?
+      description: Your own production use, public write-ups, papers. This decides proposed / emerging / validated.
+  - type: checkboxes
+    id: example
+    attributes:
+      label: Example
+      options:
+        - label: I'm willing to write the runnable example and tests (stdlib Python + pytest).

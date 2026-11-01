@@ -2,265 +2,166 @@
 title: Semantic Rollback
 pillar: loop-engineering
 status: emerging
-tags: [agents, rollback, state-management, recovery, agentic]
+tags: [agents, checkpoints, recovery, workflows]
 related:
   - Loop Termination
   - No-Progress Detection
+  - Maker–Verifier Split
   - Circuit Breaker for LLMs
-  - Maker-Verifier Split
+example: examples/loop_engineering/semantic_rollback.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-07"
-description: Checkpoint agentic workflow state at semantically coherent milestones and restore to the last valid checkpoint when partial failure corrupts downstream steps.
+last_updated: "2026-11"
+description: Checkpoint a multi-step workflow after each validated step. When a step fails or produces junk, restore the last good state and retry that step with a different strategy.
 sidebar:
   order: 5
 ---
 
 ## What It Is
 
-Semantic Rollback checkpoints the state of a multi-step agentic workflow at points where the agent has reached a semantically coherent intermediate result—a valid plan, a complete sub-task, a verified data fetch. When a later step fails or produces corrupted output, the system rolls back to the last valid checkpoint and retries from there, rather than restarting from scratch or continuing with corrupted state. Unlike database transactions, rollback targets semantic coherence, not just data consistency.
+A multi-step agent workflow (plan → fetch → analyze → write) is run as named steps. After each step, its result is *validated*. If it's valid, the state is checkpointed. If a step throws or produces something invalid, the workflow restores the last checkpoint, discarding anything the bad step wrote, and retries *that step*, telling it which attempt this is so it can change approach. After N attempts it stops, returning the last good state and naming the failed step.
+
+"Semantic" because checkpoints mark points where the work makes sense, not arbitrary positions in the code. Durable-execution engines (Temporal, LangGraph checkpointers) give you checkpoint and replay. This pattern adds a semantic validation gate and strategy-changing retries on top.
 
 ## The Problem It Solves
 
-Multi-step LLM agents fail in the middle of complex tasks, leaving partial work in an inconsistent state:
+Long agent workflows fail partway through, and the two default reactions are both bad:
 
-- Agent writes 3 of 5 required sections of a document, then halts on step 4 due to a tool timeout. Restarting from scratch discards 3 valid sections.
-- Agent executes a 10-step research pipeline. Step 7 retrieves incorrect data due to a hallucinated query. Steps 8-10 build on corrupted data and produce nonsensical conclusions.
-- Agent calls an external API at step 3, receives ambiguous output, and produces a plan that looks valid but is semantically incompatible with the original goal. The error compounds silently through remaining steps.
+- **Restart from scratch** and throw away three good steps of research because step four timed out.
+- **Continue with corrupt state:** step four returned an empty or wrong result, steps five to eight build on it, and the final report is fluent nonsense.
 
-Existing patterns handle adjacent but different problems: Loop Termination stops infinite loops, No-Progress Detection halts stalled agents, Circuit Breaker handles provider failures. None of them restore the agent to a known-good intermediate state and resume from there. Without Semantic Rollback, failure means either starting over (wasting all prior work) or continuing with corrupted state (producing garbage outputs).
+A third problem is subtler: a failed attempt often leaves partial writes in the shared state, such as a half-downloaded file or a scratch variable. Retrying on top of that debris causes new failures that have nothing to do with the original one.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart TD
-    A[Agent starts task] --> B[Execute step]
-    B --> C[Checkpoint validator]
-    C -->|Semantically valid| D[Save checkpoint]
-    C -->|Invalid or corrupted| E{Previous checkpoint available?}
-    D --> F[Execute next step]
-    F --> C
-    E -->|Yes| G[Rollback to last checkpoint]
-    E -->|No| H[Abort: no valid state to restore]
-    G --> I[Increment retry counter for this step]
-    I --> J{Retry limit reached?}
-    J -->|No| B
-    J -->|Yes| K[Escalate or skip step with degraded output]
-    H --> L[Report failure with partial results]
+    C["Last checkpoint"] --> R["Run step (attempt n)<br/>on a copy of the checkpoint"]
+    R --> V{"Raised, or failed validation?"}
+    V -->|"no"| K["Save as new checkpoint → next step"]
+    V -->|"yes"| A{"Attempts left?"}
+    A -->|"yes"| C2["Discard the copy, restore checkpoint,<br/>retry with attempt n+1 (new strategy)"]
+    C2 --> R
+    A -->|"no"| F["Stop: last good state + failed step name"]
 </pre>
 
-1. **Define checkpoint boundaries**: Identify semantically coherent milestones in the workflow (e.g., "research complete," "plan validated," "section drafted"). These are points where intermediate output is independently verifiable.
-2. **Checkpoint validation**: Before saving a checkpoint, validate that the current state is semantically coherent:
-   - Structural validation (required fields present, format correct)
-   - Semantic validation (output is consistent with task goal and prior checkpoints)
-   - Optional: LLM-based validation ("Is this a complete and valid plan for the original task?")
-3. **Checkpoint storage**: Save the full agent state at each validated milestone: context, intermediate outputs, tool call results, step index.
-4. **Failure detection**: Detect failures via exception from tool call, validation failure on step output, No-Progress Detection signal, or LLM quality signal.
-5. **Rollback execution**: Restore the most recent valid checkpoint. Invalidate all state produced after that checkpoint.
-6. **Retry with modification**: Retry the failed step, optionally with a different strategy, different tool, or reduced scope.
-7. **Retry cap**: Limit retries per checkpoint to prevent infinite rollback loops. After N retries, escalate or skip with a degraded output.
+1. **Name the steps and give each a validator,** something checkable: non-empty, matches a schema, passes a test, or approved by a [verifier](maker-verifier-split.md).
+2. **Run each attempt on a copy** of the last checkpoint, so failed attempts can't leave anything behind.
+3. **Pass the attempt number to the step.** Retrying identically usually reproduces the failure. Attempt 2 should do something different: a narrower query, another tool, a different prompt.
+4. **Cap attempts per step,** then stop with a clear result: what completed, what failed, and the state to resume from.
 
 ## When to Use It
 
-- Multi-step agentic workflows where steps have semantic dependencies (output of step N is input to step N+1)
-- Tasks where restarting from scratch has high cost (long-running workflows, expensive tool calls, user-facing latency)
-- Workflows with identifiable intermediate milestones that can be independently validated
-- Systems that make external API calls or file writes mid-workflow where partial state must be managed
-- Agents expected to handle occasional tool failures or hallucinated intermediate outputs gracefully
+- Workflows of several steps where later steps depend on earlier ones.
+- Steps that are expensive to redo (long research, paid API calls, user-visible latency).
+- Steps that fail transiently (timeouts) or produce sometimes-invalid output (empty results, bad JSON).
 
 ## When NOT to Use It
 
-- Single-step LLM calls (no intermediate state to checkpoint)
-- Workflows where all steps are cheap and fast enough that restarting is acceptable
-- Workflows with no identifiable semantic milestones (continuous stream of tool calls without coherent intermediate states)
-- Stateless workflows where each step is independent and does not consume prior step output
-- Systems where checkpoint storage overhead outweighs the recovery benefit
+- **Single-step calls.** There's nothing to checkpoint.
+- **Cheap workflows,** where restarting from scratch costs less than the bookkeeping.
+- **Steps with external side effects that can't be undone.** Restoring *your* state doesn't un-send an email. Put those steps behind [Human-in-the-Loop](../governance/human-in-the-loop.md), or make them idempotent and place them last.
 
 ## Trade-offs
 
-1. **Checkpoint overhead** — Every validated checkpoint incurs a storage write and validation cost. LLM-based validators add 200-500ms per checkpoint. For short workflows (fewer than 5 steps), overhead may exceed the benefit.
-
-2. **Rollback does not fix root cause** — Rolling back and retrying the same step with the same inputs often reproduces the same failure. Rollback is most useful when combined with a strategy change (different prompt, different tool, different data source) on retry.
-
-3. **Checkpoint validity is only as good as your validator** — A validator that passes corrupted state creates false confidence. Steps downstream of a bad checkpoint continue accumulating errors. Invest in validator quality, not just checkpoint frequency.
-
-4. **Semantic coherence is subjective** — "Is this plan valid?" is not a binary question. Validators may disagree across runs, making rollback behavior non-deterministic. Use structural validators (schema, required fields) as primary gate and LLM validators as secondary signal.
+- **Checkpoint cost.** Copying large state at every step costs memory and storage. Store deltas or references for big artifacts.
+- **Validators are the weak point.** A validator that passes junk creates a "good" checkpoint full of junk. Invest in validators more than in checkpoint frequency.
+- **Retries change behavior.** Strategy-changing retries are the point, but they make runs less reproducible. Log which strategy produced each checkpoint.
 
 ## Failure Modes
 
-### Rollback Loop
-**Trigger**: Step N fails, rolls back to checkpoint N-1, retries step N, fails again for the same reason.
-**Symptom**: Agent spins on the same step consuming cost and time. User sees high latency and eventual failure.
-**Mitigation**: Increment retry counter per checkpoint. On first retry, modify strategy (different prompt). On second retry, change tool or data source. On third, degrade gracefully (skip step, continue with partial output). Never retry identically.
+**Identical retries.** The step ignores the attempt number and fails the same way three times. This was the bug in this page's earlier example, where the rollback happened but the step was never re-run with anything new. Make strategy changes explicit.
 
-### Silent Validator Pass on Corrupted State
-**Trigger**: Step 3 produces a valid-looking plan that is subtly semantically wrong (addresses a different goal, uses incorrect constraints). Structural validator passes. State is checkpointed.
-**Symptom**: All subsequent steps run successfully but build on a corrupted foundation. Final output is coherent but wrong.
-**Mitigation**: Add cross-checkpoint consistency validation: before advancing past each checkpoint, verify it is consistent with the original task goal and all prior checkpoints.
+**Debris from failed attempts.** A retry runs on state the failed attempt modified. Always restore from a copy. The example's test checks that scratch keys from failed attempts don't survive.
 
-### Checkpoint State Explosion
-**Trigger**: Long workflow (20+ steps) with large intermediate state (multi-page documents, large data fetches). Every checkpoint stores the full state.
-**Symptom**: Storage grows proportionally to workflow length times state size. For concurrent users, storage cost becomes prohibitive.
-**Mitigation**: Store only the delta from the prior checkpoint rather than full state. Use content-addressable storage with deduplication. Set maximum checkpoint history (e.g., keep last 3 only).
+**Rolling back external effects you can't undo.** Local state goes back, the outside world doesn't. Mark side-effecting steps, and never retry them automatically without idempotency keys.
 
 ## Implementation Example
 
-```python
-import json
-import copy
-from dataclasses import dataclass, field, asdict
-from typing import Any, Optional, Callable
-from enum import Enum
+Named steps with validators, copy-on-attempt state, a checkpoint after each valid step, retries that pass the attempt number, a per-step attempt cap, and a log of rollbacks. The tests cover a timeout that succeeds on retry, an empty result treated as invalid, a strategy change, and giving up while keeping the last good state.
 
-class CheckpointStatus(Enum):
-    VALID = "valid"
-    INVALID = "invalid"
-
-@dataclass
-class Checkpoint:
-    step_index: int
-    step_name: str
-    state: dict[str, Any]
-    status: CheckpointStatus = CheckpointStatus.VALID
-    retry_count: int = 0
-
-@dataclass
-class AgentState:
-    task: str
-    current_step: int = 0
-    outputs: dict[str, Any] = field(default_factory=dict)
-    context: list[dict] = field(default_factory=list)
-
-class SemanticRollbackAgent:
-    """
-    Wraps an agentic workflow with checkpoint-and-rollback capability.
-    """
-
-    def __init__(
-        self,
-        max_retries_per_step: int = 3,
-        validator: Optional[Callable[[AgentState, str], bool]] = None
-    ):
-        self.max_retries_per_step = max_retries_per_step
-        self.validator = validator or self._default_validator
-        self.checkpoints: list[Checkpoint] = []
-
-    def _default_validator(self, state: AgentState, step_name: str) -> bool:
-        """Structural validator: check required outputs exist and are non-empty"""
-        output = state.outputs.get(step_name)
-        if output is None:
-            return False
-        if isinstance(output, str) and len(output.strip()) < 10:
-            return False
-        if isinstance(output, dict) and not output:
-            return False
-        return True
-
-    def _save_checkpoint(self, state: AgentState, step_name: str) -> None:
-        checkpoint = Checkpoint(
-            step_index=state.current_step,
-            step_name=step_name,
-            state=copy.deepcopy(asdict(state))
-        )
-        self.checkpoints.append(checkpoint)
-        print(f"[checkpoint] Saved at step '{step_name}' (index {state.current_step})")
-
-    def _rollback(self, state: AgentState) -> Optional[AgentState]:
-        if not self.checkpoints:
-            return None
-        last = self.checkpoints[-1]
-        last.retry_count += 1
-        print(f"[rollback] Restoring to '{last.step_name}' (retry {last.retry_count}/{self.max_retries_per_step})")
-        return AgentState(**last.state)
-
-    async def run_step(
-        self,
-        state: AgentState,
-        step_name: str,
-        step_fn: Callable[[AgentState], Any],
-        retry_strategy: Optional[Callable[[int, AgentState], AgentState]] = None
-    ) -> tuple[AgentState, bool]:
-        """Execute one step with checkpoint and rollback support."""
-        try:
-            result = await step_fn(state)
-            state.outputs[step_name] = result
-            state.current_step += 1
-
-            if self.validator(state, step_name):
-                self._save_checkpoint(state, step_name)
-                return state, True
-            else:
-                raise ValueError(f"Validation failed for step '{step_name}'")
-
-        except Exception as e:
-            print(f"[step-fail] Step '{step_name}' failed: {e}")
-            restored_state = self._rollback(state)
-            if restored_state is None:
-                print("[rollback-fail] No checkpoint available; cannot recover")
-                return state, False
-
-            last_checkpoint = self.checkpoints[-1]
-            if last_checkpoint.retry_count >= self.max_retries_per_step:
-                print(f"[retry-limit] Max retries reached for '{last_checkpoint.step_name}'")
-                restored_state.outputs[step_name] = None
-                restored_state.current_step += 1
-                return restored_state, False
-
-            if retry_strategy:
-                restored_state = retry_strategy(last_checkpoint.retry_count, restored_state)
-
-            return restored_state, False
-
-
-# Usage example
-async def run_research_agent(task: str, llm_call: Callable):
-    """4-step research agent with semantic rollback"""
-    agent = SemanticRollbackAgent(max_retries_per_step=2)
-    state = AgentState(task=task)
-
-    state, _ = await agent.run_step(
-        state=state,
-        step_name="research_plan",
-        step_fn=lambda s: llm_call(f"Create a research plan for: {s.task}")
-    )
-
-    state, _ = await agent.run_step(
-        state=state,
-        step_name="fetch_sources",
-        step_fn=lambda s: fetch_sources(s.outputs.get("research_plan")),
-        retry_strategy=lambda attempt, s: s  # extend with modified prompt on retry
-    )
-
-    state, _ = await agent.run_step(
-        state=state,
-        step_name="synthesis",
-        step_fn=lambda s: llm_call(
-            f"Synthesize findings:\n{json.dumps(s.outputs.get('fetch_sources', {}))}"
-        )
-    )
-
-    return state.outputs
+```bash
+cd examples && pytest loop_engineering/test_semantic_rollback.py
 ```
+
+<!-- example: examples/loop_engineering/semantic_rollback.py -->
+```python
+"""Semantic Rollback.
+
+Run a multi-step workflow as named steps. After each step, validate the
+result; if valid, checkpoint. If a step fails or produces something invalid,
+restore the last checkpoint (dropping anything the bad step wrote) and retry
+that step with the attempt number, so the step can change strategy. After N
+failed attempts, stop with the last good state and say which step failed.
+"""
+
+from __future__ import annotations
+
+import copy
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+State = dict  # whatever the workflow carries between steps
+StepFn = Callable[[State, int], object]  # (state, attempt) -> value; attempt starts at 1
+Validator = Callable[[State, object], str | None]  # -> problem description, or None if fine
+
+
+@dataclass
+class Step:
+    name: str
+    run: StepFn
+    validate: Validator = lambda state, value: None if value not in (None, "", [], {}) else "empty result"
+
+
+@dataclass
+class RunResult:
+    completed: bool
+    state: State
+    failed_step: str | None = None
+    log: list[str] = field(default_factory=list)
+
+
+def run_workflow(steps: list[Step], initial: State, max_attempts: int = 3) -> RunResult:
+    checkpoint = copy.deepcopy(initial)
+    log: list[str] = []
+
+    for step in steps:
+        for attempt in range(1, max_attempts + 1):
+            state = copy.deepcopy(checkpoint)  # every attempt starts from the last good state
+            try:
+                value = step.run(state, attempt)
+                problem = step.validate(state, value)
+            except Exception as exc:
+                problem = f"{type(exc).__name__}: {exc}"
+            if problem is None:
+                state[step.name] = value
+                checkpoint = state
+                log.append(f"{step.name}: ok on attempt {attempt} (checkpoint)")
+                break
+            log.append(f"{step.name}: attempt {attempt} rejected ({problem}); rolled back")
+        else:
+            return RunResult(False, checkpoint, step.name, log)
+
+    return RunResult(True, checkpoint, None, log)
+```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|------|------|-------|
-| LangGraph | Open-source | Native support for checkpointing and state persistence in graph-based agents |
-| CrewAI | Open-source | Task-level retry with some checkpoint support |
-| Temporal | Workflow engine | Production-grade workflow state management with replay; can wrap LLM steps |
-| Apache Airflow | Orchestration | Task-level retry with state persistence; not LLM-native but adaptable |
-| Custom implementation | DIY | Required for semantic validation logic tailored to specific agent workflows |
+| Tool | Notes |
+|---|---|
+| LangGraph checkpointers | Persist graph state per step; resume and time-travel |
+| Temporal | Durable execution with deterministic replay; wrap LLM steps as activities |
+| Inngest, Restate, DBOS | Durable step functions with retries |
 
 ## Related Patterns
 
-- **[Loop Termination](loop-termination.md)** — Loop Termination stops runaway agents; Semantic Rollback recovers them. Use both: terminate if retries are exhausted after rollback.
-- **[No-Progress Detection](no-progress-detection.md)** — No-Progress Detection signals that the agent is stuck; Semantic Rollback is the recovery mechanism to act on that signal.
-- **[Maker-Verifier Split](maker-verifier-split.md)** — Verifier output serves as the checkpoint validator in Semantic Rollback; only accept checkpoints that pass the verifier quality gate.
-- **[Circuit Breaker for LLMs](../reliability/circuit-breaker.md)** — Circuit Breaker handles provider-level failures; Semantic Rollback handles workflow-level semantic failures. Both can coexist in the same system.
+- [Loop Termination](loop-termination.md) applies when the workflow is a loop rather than a fixed sequence.
+- [No-Progress Detection](no-progress-detection.md): a step that keeps returning the same invalid output should be rolled back and given a different strategy.
+- [Maker–Verifier Split](maker-verifier-split.md) is the strongest kind of step validator.
+- [Circuit Breaker for LLMs](../reliability/circuit-breaker.md) handles provider failures underneath. This pattern handles workflow-level failures above them.
 
 ## Further Reading
 
-- [LangGraph: Stateful, Multi-Actor Applications](https://langchain-ai.github.io/langgraph/) — Production framework with native checkpoint and rollback support
-- [Temporal Workflow Durability](https://docs.temporal.io/workflows) — Battle-tested approach to durable, recoverable workflow execution
-- [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629) — Foundation for multi-step agentic workflows that semantic rollback protects
-- [Voyager: An Open-Ended Embodied Agent with Large Language Models](https://arxiv.org/abs/2305.16291) — Production example of checkpointed skill acquisition in LLM agents
+- [LangGraph persistence and checkpointers](https://langchain-ai.github.io/langgraph/concepts/persistence/)
+- [Temporal: workflows](https://docs.temporal.io/workflows)
+- [Sagas](https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf), Garcia-Molina and Salem, 1987. Compensating actions for long-running transactions.

@@ -9,9 +9,34 @@ interface Props {
 export function ArticleBody({ html }: Props) {
   const ref = useRef<HTMLDivElement>(null)
 
+  // Copy buttons on code blocks.
   useEffect(() => {
     if (!ref.current) return
-    
+    const buttons: HTMLButtonElement[] = []
+    ref.current.querySelectorAll<HTMLElement>('figure[data-rehype-pretty-code-figure] > pre').forEach((pre) => {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'code-copy'
+      button.textContent = 'Copy'
+      button.setAttribute('aria-label', 'Copy code')
+      button.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(pre.innerText)
+          button.textContent = 'Copied'
+          setTimeout(() => (button.textContent = 'Copy'), 1500)
+        } catch {
+          /* clipboard unavailable */
+        }
+      })
+      pre.parentElement?.appendChild(button)
+      buttons.push(button)
+    })
+    return () => buttons.forEach((b) => b.remove())
+  }, [html])
+
+  useEffect(() => {
+    if (!ref.current) return
+
     // Find both <pre class="mermaid"> and <pre><code class="language-mermaid">
     const preMermaid = ref.current.querySelectorAll<HTMLElement>('pre.mermaid')
     const codeMermaid = ref.current.querySelectorAll<HTMLElement>('code.language-mermaid')

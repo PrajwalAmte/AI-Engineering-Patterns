@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { PatternCard } from './PatternCard'
-import { PILLAR_ORDER, PILLAR_LABELS } from '@/lib/patterns'
+import { PILLAR_ORDER, PILLAR_LABELS, PILLAR_DESCRIPTIONS } from '@/lib/patterns'
 
 interface PatternItem {
   title: string
@@ -26,6 +26,15 @@ export function PillarFilter({ patterns }: Props) {
     if (p) setActive(p)
   }, [])
 
+  // Keep the URL in sync so a filtered view can be shared.
+  const select = (pillar: string) => {
+    setActive(pillar)
+    const url = new URL(window.location.href)
+    if (pillar === 'all') url.searchParams.delete('pillar')
+    else url.searchParams.set('pillar', pillar)
+    window.history.replaceState(null, '', url)
+  }
+
   const visible =
     active === 'all' ? patterns : patterns.filter((p) => p.pillar === active)
 
@@ -33,7 +42,7 @@ export function PillarFilter({ patterns }: Props) {
     <>
       <div className="flex flex-wrap gap-2 mb-8">
         <button
-          onClick={() => setActive('all')}
+          onClick={() => select('all')}
           className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
             active === 'all'
               ? 'bg-[var(--accent)] text-white'
@@ -47,7 +56,7 @@ export function PillarFilter({ patterns }: Props) {
           return (
             <button
               key={pillar}
-              onClick={() => setActive(pillar)}
+              onClick={() => select(pillar)}
               className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
                 active === pillar
                   ? 'bg-[var(--accent)] text-white'
@@ -59,6 +68,10 @@ export function PillarFilter({ patterns }: Props) {
           )
         })}
       </div>
+
+      {active !== 'all' && PILLAR_DESCRIPTIONS[active] && (
+        <p className="-mt-4 mb-6 text-gray-600 dark:text-gray-400">{PILLAR_DESCRIPTIONS[active]}</p>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {visible.map((p) => (

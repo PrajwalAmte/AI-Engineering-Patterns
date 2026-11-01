@@ -4,223 +4,210 @@ pillar: retrieval-and-memory
 status: validated-in-production
 tags: [retrieval, rag, search, embeddings, bm25]
 related:
-  - Classic RAG Pattern
-  - Reranking Pattern
-  - Chunking Strategy Pattern
-  - GraphRAG Pattern
+  - Retrieval Quality Gate
+  - Retrieval Freshness Watermark
+  - GraphRAG
+  - Grounding Verifier
+example: examples/retrieval_and_memory/hybrid_search.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-03"
-description: Combine dense vector search with sparse BM25 keyword search for retrieval that consistently outperforms either method alone.
+last_updated: "2026-11"
+description: Run keyword (BM25) and vector search side by side and merge the rankings, so exact identifiers and paraphrases both get found.
 sidebar:
-  order: 3
+  order: 1
 ---
 
 ## What It Is
 
-Hybrid search combines two fundamentally different retrieval approaches — dense vector search (semantic similarity) and sparse keyword search (lexical matching like BM25) — then merges their results using a fusion algorithm. This captures both semantic meaning and exact keyword matches, consistently outperforming either method used alone.
+Two retrievers run on every query. BM25 or another keyword index finds documents that contain the query's exact terms. A vector index finds documents that mean something similar. The two ranked lists are merged, usually with Reciprocal Rank Fusion (RRF), and the merged top-k goes on to the next stage.
+
+If you're building RAG and haven't decided on a retriever, this is the sensible default.
 
 ## The Problem It Solves
 
-Dense retrieval (embeddings) captures meaning but misses exact terms. A query for "error code E-4012" will not match a document about that error code if the embedding space was not trained on that specific identifier. Sparse retrieval (BM25) captures exact terms but misses semantics. "How to fix authentication issues" will not match a document titled "Resolving login failures."
+Each retriever fails on a different kind of query.
 
-Using either approach alone leaves a class of queries poorly served:
+Embeddings are bad at exact strings. A support engineer pastes `E-4012` and the vector search returns documents about payment errors in general, maybe including `E-4013`, because to an embedding model those look almost identical. The same goes for SKUs, function names, version numbers and people's names.
 
-- **Dense only**: Misses exact identifiers, product names, error codes, and specialized terminology.
-- **Sparse only**: Misses paraphrases, synonyms, and conceptual similarity.
+Keyword search is bad at paraphrase. "Authentication issues" won't match a page titled "Resolving login failures" because they share no words.
 
-Hybrid search addresses both weaknesses by retrieving candidates from both systems and fusing the results.
+Real traffic contains both kinds of query, often from the same user in the same session.
 
 ## How It Works
 
 <pre class="mermaid">
-flowchart TD
-    A["Query"] --> B["Dense retrieval (embeddings)"]
-    A --> C["Sparse retrieval (BM25)"]
-    B --> D["Top-K dense results"]
-    C --> E["Top-K sparse results"]
-    D --> F["Reciprocal Rank Fusion (RRF)"]
-    E --> F
-    F --> G["Optional reranking"]
-    G --> H["Merged top-K results"]
+flowchart LR
+    Q["Query"] --> S["BM25 / keyword index"]
+    Q --> D["Embed → vector index"]
+    S --> SR["Ranked list A"]
+    D --> DR["Ranked list B<br/>(below similarity floor dropped)"]
+    SR & DR --> F["Reciprocal Rank Fusion"]
+    F --> T["Top-k → reranker / gate / prompt"]
 </pre>
 
-1. The query is sent to both retrieval systems in parallel.
-2. Dense retrieval embeds the query and performs approximate nearest neighbor search against the document embeddings.
-3. Sparse retrieval runs BM25 (or similar) against the keyword index.
-4. Results from both systems are merged using a fusion algorithm. The most common approach is **Reciprocal Rank Fusion (RRF)**, which combines rankings without requiring score normalization.
-5. The fused top-K results are returned, optionally followed by a reranking step.
-
-**Reciprocal Rank Fusion formula:**
+1. Send the query to both indexes in parallel and take the top 20–50 candidates from each.
+2. Drop dense results below a minimum similarity. Vector search always returns *something*, even for a query with no good match.
+3. Merge with RRF. Each document scores the sum, over the lists it appears in, of 1 / (k + rank). The constant k (60 is the usual value, from the original paper) flattens the advantage of being ranked first.
 
 $$\text{RRF}(d) = \sum_{r \in R} \frac{1}{k + \text{rank}_r(d)}$$
 
-Where $R$ is the set of result lists, $\text{rank}_r(d)$ is the rank of document $d$ in list $r$, and $k$ is a constant (typically 60) that controls how much weight is given to top-ranked results.
+4. Pass the fused top-k to a reranker or a [Retrieval Quality Gate](retrieval-quality-gate.md).
+
+RRF uses ranks, not scores, so you never have to put a BM25 score and a cosine similarity on the same scale. That's most of why it's the default.
 
 ## When to Use It
 
-- Your document corpus contains both natural language content and structured identifiers (codes, product names, technical terms).
-- You need robust retrieval across diverse query types — from keyword lookups to conceptual questions.
-- You are building a RAG system and want the highest baseline retrieval quality before investing in more complex approaches.
-- Your evaluation shows that neither dense nor sparse retrieval alone achieves acceptable recall.
+- Your corpus has identifiers alongside prose: error codes, product names, API names, ticket numbers.
+- Queries come from a mix of experts (who type exact terms) and everyone else (who describe the problem).
+- You're setting a RAG baseline. Hybrid plus a reranker is hard to beat without domain-specific work.
 
-## When not to Use It
+## When NOT to Use It
 
-- Your queries and documents are pure natural language with no specialized terminology. Dense retrieval alone may be sufficient, and the added complexity of hybrid search provides marginal improvement.
-- Your corpus is extremely small (under 1,000 documents). At small scale, the difference between retrieval methods is negligible, and a simple embedding search is adequate.
-- You cannot operationally maintain two search indices. Hybrid search requires both a vector store and a keyword index, doubling indexing infrastructure.
-- Latency constraints are extremely tight. Running two searches in parallel and fusing results adds overhead compared to a single retrieval path.
+- **Pure prose, no jargon.** Dense retrieval alone may be enough. Measure it on your own eval set before adding a second index.
+- **Tiny corpora.** With a few hundred documents, you can often skip retrieval and put everything in the context.
+- **You can't keep two indexes in sync.** Two pipelines that drift apart are worse than one good pipeline. Many engines (Elasticsearch/OpenSearch, Weaviate, Qdrant, Vespa, Postgres with pgvector plus FTS) do both in one store, which removes most of this concern.
 
 ## Trade-offs
 
-1. **Infrastructure complexity** — Two search systems to maintain, index, and keep in sync. Any document update must be reflected in both indices.
-2. **Tuning the fusion** — The relative weight of dense vs. sparse results affects quality. The optimal ratio varies by domain and query distribution. RRF is a good default but may not be optimal.
-3. **Increased indexing cost** — Documents must be both embedded (compute-intensive) and tokenized for BM25 (I/O-intensive). Indexing takes longer and uses more storage.
-4. **Diminishing returns with reranking** — If you add a reranking step after hybrid search, the reranker often compensates for weaknesses in individual retrieval methods, reducing the marginal benefit of hybrid over dense-only + reranker.
+- **Two indexes to build and update.** Every document change has to land in both.
+- **Fusion weighting is per domain.** Plain RRF treats both lists equally. If one side is consistently better for your traffic, a weighted fusion or a learned reranker will do better.
+- **A good reranker narrows the gap.** With a strong cross-encoder on top, the lift from hybrid over dense-only shrinks. It rarely disappears, because the reranker can only re-order candidates that some retriever found in the first place.
 
 ## Failure Modes
 
-### Index Synchronization Lag
-**Trigger**: Document updates are applied to the vector store but the keyword index (or vice versa) lags behind due to different indexing pipelines.
-**Symptom**: Hybrid results become inconsistent — a query returns a document from one index that is missing or outdated in the other. Fusion scores are skewed because one result list is stale.
-**Mitigation**: Use a single ingestion pipeline that writes to both indices atomically. If that is not possible, add a freshness check that flags results where the two indices disagree on document version.
+**The two indexes disagree.** The vector index was rebuilt last night and the keyword index last week. One document now appears in only one list, under a different version. Write to both from one ingestion pipeline, and store a content version on every chunk so you can detect this.
 
-### Fusion Weight Mismatch
-**Trigger**: The dense-vs-sparse weight ratio was tuned on one query distribution, but traffic shifts (new user segment, new content type).
-**Symptom**: Retrieval quality drops for one class of queries. Keyword-heavy queries underperform if dense weight dominates, or vice versa. The drop is hard to detect because overall metrics average out.
-**Mitigation**: Monitor recall per query type, not just aggregate. Consider query-adaptive fusion weights — use a lightweight classifier to adjust the ratio based on query characteristics (length, presence of jargon).
+**One side floods the fusion.** An ambiguous one-word query ("python") brings back plausible-looking junk from one retriever, and it fills half the top-k. Per-retriever floors (the dense similarity cutoff in the example) and a downstream gate stop junk from reaching the prompt.
 
-### Embedding-Keyword Disagreement on Ambiguous Queries
-**Trigger**: A query like "Python" matches programming documentation via embeddings but snake-related content via keyword.
-**Symptom**: Fusion surfaces irrelevant results from the weaker method that dilute the top-k context window.
-**Mitigation**: Apply a minimum relevance threshold per method before fusion. Results below the threshold from either method are excluded from the merge.
+**Tokenizer eats identifiers.** The keyword analyzer splits `E-4012` into `e` and `4012`, and now every error code matches every other error code. Check how your analyzer tokenizes your real identifiers before trusting BM25 with them.
 
 ## Implementation Example
 
+A pure-Python BM25, a dense index over any embedding function, and RRF. The tests check the two halves separately: an identifier query is won by BM25, and a paraphrase query is won by the dense side.
+
+```bash
+cd examples && pytest retrieval_and_memory/test_hybrid_search.py
+```
+
+<!-- example: examples/retrieval_and_memory/hybrid_search.py -->
 ```python
-from dataclasses import dataclass
+"""Hybrid Search: BM25 + dense retrieval, merged with Reciprocal Rank Fusion.
+
+BM25 finds the exact error code; embeddings find the paraphrase. RRF merges
+the two rankings without having to make their scores comparable.
+"""
+
+from __future__ import annotations
+
 import math
+import re
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
+
+Embed = Callable[[str], list[float]]
+_TOKEN = re.compile(r"[a-z0-9][a-z0-9\-_.]*", re.I)
+
+
+def tokenize(text: str) -> list[str]:
+    # Keep identifiers like "E-4012" and "v2.3.1" whole; they are why BM25 is here.
+    return [t.lower().strip(".") for t in _TOKEN.findall(text)]
+
+
+class BM25:
+    def __init__(self, docs: list[str], k1: float = 1.5, b: float = 0.75):
+        self.k1, self.b = k1, b
+        self.docs = [tokenize(d) for d in docs]
+        self.avg_len = sum(map(len, self.docs)) / max(len(self.docs), 1)
+        df = Counter(term for doc in self.docs for term in set(doc))
+        n = len(self.docs)
+        self.idf = {t: math.log(1 + (n - f + 0.5) / (f + 0.5)) for t, f in df.items()}
+
+    def scores(self, query: str) -> list[float]:
+        terms = tokenize(query)
+        out = []
+        for doc in self.docs:
+            tf = Counter(doc)
+            norm = self.k1 * (1 - self.b + self.b * len(doc) / self.avg_len)
+            out.append(sum(self.idf.get(t, 0.0) * tf[t] * (self.k1 + 1) / (tf[t] + norm) for t in terms if tf[t]))
+        return out
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot / ((sum(x * x for x in a) ** 0.5 or 1.0) * (sum(y * y for y in b) ** 0.5 or 1.0))
+
+
+def rrf(rankings: list[list[int]], k: int = 60) -> dict[int, float]:
+    """Reciprocal Rank Fusion: score(d) = sum over lists of 1 / (k + rank)."""
+    fused: dict[int, float] = {}
+    for ranking in rankings:
+        for rank, doc_id in enumerate(ranking, start=1):
+            fused[doc_id] = fused.get(doc_id, 0.0) + 1.0 / (k + rank)
+    return fused
 
 
 @dataclass
-class SearchResult:
-    doc_id: str
-    content: str
+class Hit:
+    doc_id: int
+    text: str
     score: float
+    sparse_rank: int | None
+    dense_rank: int | None
 
 
-def bm25_search(query: str, corpus: dict[str, str], k: int = 10) -> list[SearchResult]:
-    query_terms = query.lower().split()
-    scores: dict[str, float] = {}
-    n = len(corpus)
-    avg_dl = sum(len(doc.split()) for doc in corpus.values()) / max(n, 1)
+class HybridIndex:
+    def __init__(self, docs: list[str], embed: Embed, min_dense_sim: float = 0.1):
+        self.docs = docs
+        self.embed = embed
+        self.min_dense_sim = min_dense_sim
+        self.bm25 = BM25(docs)  # in production: your keyword index (Elasticsearch, Postgres FTS, ...)
+        self.vectors = [embed(d) for d in docs]  # in production: your vector index
 
-    df: dict[str, int] = {}
-    for doc in corpus.values():
-        seen = set(doc.lower().split())
-        for term in seen:
-            df[term] = df.get(term, 0) + 1
+    def search(self, query: str, k: int = 5, candidates: int = 20) -> list[Hit]:
+        sparse = self.bm25.scores(query)
+        sparse_rank = [i for i in sorted(range(len(sparse)), key=lambda i: -sparse[i]) if sparse[i] > 0][:candidates]
 
-    k1, b = 1.5, 0.75
+        qv = self.embed(query)
+        sims = [_cosine(qv, v) for v in self.vectors]
+        # A per-method floor keeps one retriever's junk from diluting the fusion.
+        dense_rank = [
+            i for i in sorted(range(len(sims)), key=lambda i: -sims[i]) if sims[i] >= self.min_dense_sim
+        ][:candidates]
 
-    for doc_id, doc in corpus.items():
-        doc_terms = doc.lower().split()
-        dl = len(doc_terms)
-        tf: dict[str, int] = {}
-        for t in doc_terms:
-            tf[t] = tf.get(t, 0) + 1
-
-        score = 0.0
-        for term in query_terms:
-            if term not in tf:
-                continue
-            term_df = df.get(term, 0)
-            idf = math.log((n - term_df + 0.5) / (term_df + 0.5) + 1)
-            term_tf = tf[term]
-            numerator = term_tf * (k1 + 1)
-            denominator = term_tf + k1 * (1 - b + b * dl / avg_dl)
-            score += idf * numerator / denominator
-
-        if score > 0:
-            scores[doc_id] = score
-
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]
-    return [SearchResult(doc_id=d, content=corpus[d], score=s) for d, s in ranked]
-
-
-def dense_search(
-    query_embedding: list[float],
-    doc_embeddings: dict[str, list[float]],
-    corpus: dict[str, str],
-    k: int = 10,
-) -> list[SearchResult]:
-    import numpy as np
-
-    q = np.array(query_embedding)
-    scores = {}
-    for doc_id, emb in doc_embeddings.items():
-        d = np.array(emb)
-        cos_sim = float(np.dot(q, d) / (np.linalg.norm(q) * np.linalg.norm(d) + 1e-10))
-        scores[doc_id] = cos_sim
-
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]
-    return [SearchResult(doc_id=d, content=corpus[d], score=s) for d, s in ranked]
-
-
-def reciprocal_rank_fusion(
-    *result_lists: list[SearchResult],
-    k: int = 60,
-    top_n: int = 10,
-) -> list[SearchResult]:
-    rrf_scores: dict[str, float] = {}
-    content_map: dict[str, str] = {}
-
-    for results in result_lists:
-        for rank, result in enumerate(results):
-            rrf_scores[result.doc_id] = rrf_scores.get(result.doc_id, 0.0) + (
-                1.0 / (k + rank + 1)
+        fused = rrf([sparse_rank, dense_rank])
+        top = sorted(fused, key=lambda i: -fused[i])[:k]
+        return [
+            Hit(
+                i,
+                self.docs[i],
+                fused[i],
+                sparse_rank.index(i) + 1 if i in sparse_rank else None,
+                dense_rank.index(i) + 1 if i in dense_rank else None,
             )
-            content_map[result.doc_id] = result.content
-
-    ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
-    return [
-        SearchResult(doc_id=d, content=content_map[d], score=s)
-        for d, s in ranked
-    ]
-
-
-def hybrid_search(
-    query: str,
-    query_embedding: list[float],
-    corpus: dict[str, str],
-    doc_embeddings: dict[str, list[float]],
-    k: int = 10,
-) -> list[SearchResult]:
-    sparse_results = bm25_search(query, corpus, k=k)
-    dense_results = dense_search(query_embedding, doc_embeddings, corpus, k=k)
-    return reciprocal_rank_fusion(sparse_results, dense_results, top_n=k)
+            for i in top
+        ]
 ```
-
-For production systems, use a database that natively supports hybrid search (Weaviate, Qdrant, Elasticsearch with vector search) instead of running separate systems.
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| Weaviate | Vector database | Native hybrid search with configurable dense/sparse weighting |
-| Qdrant | Vector database | Supports sparse vectors alongside dense, enabling hybrid retrieval |
-| Elasticsearch | Search engine | kNN vector search + BM25 in a single query |
-| Pinecone | Managed vector DB | Sparse-dense hybrid search with integrated dot-product fusion |
-| LanceDB | Embedded vector DB | Full-text search + vector search with reranking support |
+| Tool | Notes |
+|---|---|
+| Elasticsearch / OpenSearch | BM25 plus kNN in one query; RRF built in |
+| Weaviate | `hybrid` query with an alpha weighting between sparse and dense |
+| Qdrant | Sparse and dense vectors on one point; fusion in the Query API |
+| Vespa | Full control over ranking expressions |
+| Postgres (pgvector + full-text search) | Good enough for many teams, and it's the database you already run |
 
 ## Related Patterns
 
-- **[Classic RAG Pattern](/AI-Engineering-Patterns/patterns/retrieval-and-memory/classic-rag/)** — Hybrid search is an upgrade to the retrieval component in classic RAG.
-- **[Reranking Pattern](/AI-Engineering-Patterns/patterns/retrieval-and-memory/reranking/)** — Typically applied after hybrid search for further precision improvement.
-- **[Chunking Strategy Pattern](/AI-Engineering-Patterns/patterns/retrieval-and-memory/chunking-strategy/)** — Chunk size affects both dense and sparse retrieval quality.
-- **[GraphRAG Pattern](/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/)** — For relational queries where neither hybrid nor dense search is sufficient.
+- [Retrieval Quality Gate](retrieval-quality-gate.md) filters the fused candidates before they reach the prompt.
+- [Retrieval Freshness Watermark](retrieval-freshness-watermark.md) adds time as a third ranking signal.
+- [GraphRAG](../graph-patterns/graph-rag.md) handles relationship questions that no text retriever answers well.
+- [Grounding Verifier](grounding-verifier.md) checks after generation whether retrieval was enough.
 
 ## Further Reading
 
-- [Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods (Cormack et al.)](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)
-- [Hybrid Search Explained — Weaviate Documentation](https://weaviate.io/blog/hybrid-search-explained)
-- [BM25 — The Probabilistic Relevance Framework](https://en.wikipedia.org/wiki/Okapi_BM25)
+- [Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf), Cormack, Clarke and Büttcher, SIGIR 2009
+- [Okapi BM25](https://en.wikipedia.org/wiki/Okapi_BM25), Wikipedia. A good refresher on the scoring function.
+- [Introducing Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval), Anthropic, 2024. Measures the gains from combining BM25 and embeddings, with and without reranking.

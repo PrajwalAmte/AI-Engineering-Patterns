@@ -13,9 +13,16 @@ Thank you for contributing. This project exists because of community participati
 ### Write a Pattern
 
 1. Fork the repository and create a branch from `main`.
-2. Create a new Markdown file in the correct pillar directory under `content/patterns/`.
-3. Follow the pattern template below exactly.
-4. Open a Pull Request. Maintainers will review for accuracy, completeness, neutrality, and fit.
+2. Write the example first: `examples/<pillar_with_underscores>/<pattern_name>.py` plus `test_<pattern_name>.py` next to it. Standard library only; use `examples/common/fakes.py` for models, embeddings and time. The tests should cover the failure modes the page describes, not just the happy path.
+3. Create the page in the correct pillar directory under `content/patterns/`, following the template below. Set `example:` in the frontmatter and put an empty marker block in the Implementation Example section:
+
+   ```markdown
+   <!-- example: examples/reliability/circuit_breaker.py -->
+   <!-- /example -->
+   ```
+
+4. Run `node scripts/sync-examples.js` to copy the code into the page, then `node scripts/validate-schema.js` and `cd examples && pytest`.
+5. Open a Pull Request. Maintainers will review for accuracy, completeness, neutrality, and fit.
 
 ### Improve an Existing Pattern
 
@@ -32,9 +39,10 @@ pillar: "pillar-slug"
 status: "proposed"
 tags: ["tag-one", "tag-two"]
 related:
-  - "Related Pattern Name"
+  - "Related Pattern Name"   # must match another pattern's title exactly
+example: examples/<pillar>/<pattern>.py
 contributors: ["@yourgithub"]
-last_updated: "2026-03"
+last_updated: "2026-11"
 description: "One-line description for SEO and pattern cards."
 ---
 ```
@@ -51,10 +59,11 @@ Valid status values: `proposed`, `emerging`, `validated-in-production`.
 4. **When to Use It** — Specific conditions and workload types.
 5. **When NOT to Use It** — Explicit anti-use-cases. This section is mandatory.
 6. **Trade-offs** — 2-4 honest trade-offs. No pattern is free.
-7. **Implementation Example** — Minimal working code snippet. Python preferred, but language-agnostic is fine.
-8. **Tool Landscape** — Which tools implement or support this pattern (vendor-neutral).
-9. **Related Patterns** — Links to adjacent or complementary patterns.
-10. **Further Reading** — 2-4 high-quality references (papers, posts, docs). No affiliate links.
+7. **Failure Modes** — How the pattern breaks even when implemented correctly, and what to do about it.
+8. **Implementation Example** — One or two sentences, the `pytest` command, and the synced example block. Never hand-written code that isn't tested.
+9. **Tool Landscape** — Which tools implement or support this pattern (vendor-neutral).
+10. **Related Patterns** — Relative links to other pattern files, e.g. `[Guardrails](../security-and-trust/guardrails.md)`.
+11. **Further Reading** — 2-4 primary references (papers, official docs, first-hand engineering posts). Every link must be one you have opened. No affiliate links.
 
 ## Quality Bar
 
@@ -64,12 +73,16 @@ All patterns must:
 - Include at least one concrete trade-off.
 - Include a "When NOT to Use It" section.
 - Be written for a practitioner, not a researcher.
+- Say plainly when the pattern name is ours rather than an established term.
+- Claim `validated-in-production` only when the technique is widely used, not just plausible.
+- Contain no statistics without a cited source.
 
 Patterns are rejected if they:
 
 - Are marketing material for a specific vendor.
 - Duplicate an existing entry without meaningfully extending it.
 - Lack the "When NOT to Use It" section.
+- Ship without a runnable, tested example.
 
 ## Status Labels
 
@@ -89,12 +102,14 @@ npm run dev
 
 The site runs at `http://localhost:3000`.
 
-## Schema Validation
+## Checks
 
-Pattern frontmatter is validated by Velite's Zod schema at build time. To run validation locally:
+CI runs all of these. Run them locally before opening a PR:
 
 ```bash
-node scripts/validate-schema.js
+cd examples && pytest && cd ..          # every example's tests
+node scripts/sync-examples.js --check    # pages show the tested code
+node scripts/validate-schema.js          # frontmatter, related names, internal links
 ```
 
 ## Code of Conduct

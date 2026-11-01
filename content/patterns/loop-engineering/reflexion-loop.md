@@ -2,152 +2,175 @@
 title: Reflexion Loop
 pillar: loop-engineering
 status: emerging
-tags: [loops, agents, self-correction, memory, reflection]
+tags: [agents, self-correction, memory, loops]
 related:
-  - LLM-as-Judge
-  - Loop Termination
   - Maker–Verifier Split
   - No-Progress Detection
+  - Loop Termination
+  - Graph of Thoughts
+example: examples/loop_engineering/reflexion_loop.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-07"
-description: A three-role loop — Actor, Evaluator, Self-Reflection — where verbal lessons from failed attempts are written to episodic memory and read back on the next try.
+last_updated: "2026-11"
+description: Actor attempts, evaluator checks, and on failure a reflection step writes one specific lesson to a small memory that the next attempt reads. A repeated lesson means stop.
 sidebar:
-  order: 2
+  order: 4
 ---
 
 ## What It Is
 
-The Reflexion Loop pattern structures self-correction around three distinct roles rather than one model repeatedly re-answering the same prompt: an **Actor** that attempts the task, an **Evaluator** that scores the attempt, and a **Self-Reflection** step that converts a failure into a short verbal lesson, written to an episodic memory buffer that the Actor reads before its next attempt. The loop repeats until the Evaluator passes the attempt or a termination condition (see the [Loop Termination](/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/) pattern) is met.
+Reflexion (Shinn et al., 2023) separates self-correction into three roles:
+
+- **Actor**: attempts the task, reading any lessons in memory.
+- **Evaluator**: checks the attempt. Ideally this is a test run, not an opinion.
+- **Reflection**: on failure, writes *one short, specific lesson* ("using abs() broke negative inputs; return a + b directly").
+
+Lessons accumulate in a small episodic memory for the rest of the run. Each new attempt starts from the task plus what previous attempts learned.
 
 ## The Problem It Solves
 
-Naively re-prompting a model with "try again" after a failure rarely produces a materially different attempt — the model has no structured record of *what specifically* went wrong last time, so it tends to repeat the same mistake with cosmetic variation. This shows up as:
+"Try again" without structure gives near-identical retries. The model has no record of *what* went wrong, so attempt three fails the same test as attempt one with different variable names. Each retry costs as much as the first and teaches nothing.
 
-- A coding agent re-generating a patch that fails the same test three times in a row, because nothing in its context distinguishes attempt 3 from attempt 1.
-- A research agent re-running a failed query with slightly different wording instead of addressing the actual reason the previous result was insufficient.
-- Wasted iteration budget: every retry costs the same as the first attempt, with no compounding benefit from having already failed once.
+Giving it the full transcript of failures is too much. It wastes context, and the model fixates on details. A distilled lesson is the useful middle ground.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart TD
-    A["Actor attempts task"] --> B["Evaluator scores the attempt"]
-    B --> C{"Passed?"}
-    C -->|"Yes"| D["Terminate: success, return output"]
-    C -->|"No"| E["Self-Reflection step"]
-    E --> F["Write verbal lesson to episodic memory"]
-    F --> G{"Termination condition met? (see Loop Termination Pattern)"}
-    G -->|"Yes"| H["Terminate: exhausted, return best attempt + lessons"]
-    G -->|"No"| I["Actor re-attempts, reading memory buffer"]
-    I --> A
+    A["Actor: attempt (task + lessons)"] --> E["Evaluator: run tests / validate"]
+    E -->|"pass"| D["Done"]
+    E -->|"fail + feedback"| R["Reflection: one specific lesson"]
+    R --> M{"Lesson already in memory?"}
+    M -->|"yes"| S["Stop: not learning"]
+    M -->|"no"| W["Add to memory (bounded)"]
+    W --> C{"Trials left?"}
+    C -->|"yes"| A
+    C -->|"no"| X["Stop: return best attempt + lessons"]
 </pre>
 
-1. **Separate the three roles explicitly**, even if all three are the same underlying model called with different prompts. Mixing them into a single "critique yourself" prompt collapses the distinction that makes this pattern work.
-2. **Actor attempts the task** using the current prompt, tools, and whatever is in the episodic memory buffer from prior attempts.
-3. **Evaluator scores the attempt** against an explicit, checkable criterion — ideally an external verifier (tests, schema validation, a rubric) rather than the Actor grading its own work. See the [Maker–Verifier Split](/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/) pattern for why this separation matters.
-4. **On failure, the Self-Reflection step writes a short, specific, verbal lesson** — not a full transcript replay, but a distilled statement of what went wrong and what to try differently ("the patch failed because the import path assumed a flat module layout; the project uses a src/ layout").
-5. **The lesson is appended to an episodic memory buffer**, which the Actor reads on its next attempt alongside the original task. The buffer accumulates across attempts within a run, so attempt 4 has the accumulated lessons of attempts 1–3.
-6. **The loop terminates** via the same signals as any other agent loop — a passing evaluation, an iteration ceiling, or a no-progress signal — since Reflexion loops can themselves stall if the lessons aren't actually actionable.
+1. **Keep the three roles as separate calls,** even with the same model. A single "critique yourself and retry" prompt merges them, and the pattern loses its value.
+2. **Give the evaluator real feedback to pass on:** test output, validation errors, the exact failing case.
+3. **Force reflections to be one specific sentence** about the mistake and the change to make. Generic lessons ("be more careful") don't help.
+4. **Bound and de-duplicate memory.** Keep the last few lessons. If a new lesson matches an old one, the loop isn't learning, so stop.
+5. **Stop on pass, on trials exhausted, or on a repeated lesson.** Return the best attempt and the lessons, which are useful to a human picking up the task.
 
 ## When to Use It
 
-- Tasks with a cheap, reliable automated verifier: code generation with a test suite, structured data extraction with schema validation, agent tool-calling with a checkable success condition.
-- Multi-attempt tasks where the *reason* for failure is specific and expressible in language (a wrong assumption, a missed constraint) rather than open-ended quality judgment.
-- Situations where retry cost is acceptable (2-4x a single attempt) in exchange for meaningfully higher success rate on attempt 2+.
+- Tasks with a reliable evaluator that gives informative feedback: code with tests, extraction with validators, puzzles with checkers.
+- First attempts often fail for fixable, explainable reasons.
 
 ## When NOT to Use It
 
-- Tasks without a reliable, independent evaluator — if the Evaluator is the same model with the same blind spots as the Actor, failures can go undetected and the loop terminates on a false pass. This is the single most common way this pattern fails silently.
-- Latency-critical, real-time responses — the sequential Actor → Evaluator → Self-Reflection → Actor round trip adds meaningful latency that a single-pass response doesn't have.
-- Open-ended creative tasks with no checkable success criterion (there is no test suite for "is this poem good") — a rubric-graded Evaluator here just becomes a matter of opinion dressed up as verification.
+- **No evaluator.** A reflection with nothing to reflect on produces made-up lessons.
+- **The failure is missing knowledge,** not a mistake. Reflection can't supply facts. Retrieval or tools can.
+- **Latency-sensitive paths.** Each trial is at least two calls.
 
 ## Trade-offs
 
-1. **Cost multiplies** — each failed attempt costs an Actor call, an Evaluator call, and a Self-Reflection call; a task needing 3 attempts costs roughly 3x a single-pass approach, sometimes more.
-2. **Evaluator quality is the ceiling on the whole pattern** — a weak or biased Evaluator makes every other part of the loop worthless, since the Actor will happily converge on whatever the Evaluator rewards, not what's actually correct.
-3. **Verbal lessons can be wrong or overfit** — the Self-Reflection step can misattribute the cause of failure, and the Actor then "corrects" for the wrong reason, sometimes making the next attempt worse.
-4. **Memory buffer growth** — across many attempts, the accumulated lessons can grow large enough to compete for context budget with the task itself; this pattern needs to be paired with the [Token Budget Pattern](/AI-Engineering-Patterns/patterns/cost-and-efficiency/token-budget/) in long-running loops.
+- **Calls per trial:** actor plus reflection, plus the evaluator if it's a model.
+- **Lessons can mislead.** A wrong diagnosis ("the bug is in parsing" when it's in the math) sends the next attempt in the wrong direction. Good evaluator feedback is the main defense.
+- **Memory scope.** Lessons are scoped to one run here. Carrying them across runs is powerful and risky: a lesson from one context can be wrong in another.
 
 ## Failure Modes
 
-### Rubber-Stamp Evaluation
-**Trigger**: The Evaluator is the same model instance (or same model with the same prompt style) as the Actor, effectively grading its own homework.
-**Symptom**: The loop terminates with a "pass" on outputs that an independent check would fail, because the Evaluator shares the Actor's blind spots.
-**Mitigation**: Use an independent verifier where possible (test execution, schema validators, a different model or a human) rather than a same-model self-critique. See the [Maker–Verifier Split](/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/) pattern.
+**Lesson oscillation.** "Use approach A" is followed by "use approach B", then "use approach A" again. De-duplication catches exact repeats. [No-Progress Detection](no-progress-detection.md) on the attempts catches the rest.
 
-### Misattributed Lesson
-**Trigger**: The Self-Reflection step identifies a plausible-sounding but incorrect cause for the failure.
-**Symptom**: Subsequent attempts "fix" the wrong thing, and the loop either stalls (no measurable improvement) or actively regresses.
-**Mitigation**: Ground the Self-Reflection step in concrete evaluator output (the actual failing test's error message, the actual schema validation error) rather than asking the model to freely speculate about why it failed.
+**The actor grades itself.** The evaluator is a prompt asking the actor whether it did well, and it says yes. Use an external check ([Maker–Verifier Split](maker-verifier-split.md)).
 
-### Memory Buffer Bloat
-**Trigger**: Long-running loops accumulate many verbal lessons without pruning, and the buffer grows to consume a large fraction of the available context.
-**Symptom**: Later attempts have less room for the actual task context, and quality degrades even as the lesson buffer grows.
-**Mitigation**: Cap the buffer to the most recent and most relevant N lessons, or periodically summarize the buffer down to its essential, non-redundant points.
+**Unbounded memory.** Twenty lessons, half of them outdated, crowd the prompt. Keep the last few.
 
 ## Implementation Example
 
-```python
-from dataclasses import dataclass, field
-from typing import Callable
+Actor, evaluator and reflector as separate callables, bounded and de-duplicated memory, and stop reasons for pass, exhausted trials and repeated lessons. In the test, the evaluator actually runs the generated function against cases, and the second attempt passes because of the first attempt's lesson.
 
-
-@dataclass
-class EvalResult:
-    passed: bool
-    detail: str  # concrete failure detail, e.g. test error message
-
-
-@dataclass
-class ReflexionState:
-    task: str
-    memory: list = field(default_factory=list)  # verbal lessons
-    last_output: object = None
-
-
-def reflexion_loop(
-    task: str,
-    actor_fn: Callable[[str, list], object],
-    evaluator_fn: Callable[[object], EvalResult],
-    reflect_fn: Callable[[object, str], str],
-    max_attempts: int = 4,
-) -> ReflexionState:
-    state = ReflexionState(task=task)
-
-    for attempt in range(1, max_attempts + 1):
-        output = actor_fn(task, state.memory)
-        state.last_output = output
-
-        result = evaluator_fn(output)
-        if result.passed:
-            return state  # success — state.last_output is the answer
-
-        # Grounded in the evaluator's concrete failure detail,
-        # not free speculation
-        lesson = reflect_fn(output, result.detail)
-        state.memory.append(lesson)
-
-    return state  # exhausted — caller checks state.last_output + memory
+```bash
+cd examples && pytest loop_engineering/test_reflexion_loop.py
 ```
+
+<!-- example: examples/loop_engineering/reflexion_loop.py -->
+```python
+"""Reflexion Loop.
+
+Three roles, three calls: the actor attempts, the evaluator checks (ideally a
+test, not an opinion), and on failure a reflection step writes one short,
+specific lesson into memory. The next attempt reads the lessons. Memory is
+small and de-duplicated: a lesson repeated is a sign the loop is stuck.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+Actor = Callable[[str, list[str]], str]  # (task, lessons) -> attempt
+Evaluator = Callable[[str], tuple[bool, str]]  # attempt -> (passed, feedback)
+Reflector = Callable[[str, str, str], str]  # (task, attempt, feedback) -> one-sentence lesson
+
+
+@dataclass
+class Memory:
+    max_lessons: int = 5
+    lessons: list[str] = field(default_factory=list)
+
+    def add(self, lesson: str) -> bool:
+        """Returns False if this lesson was already learned (a stall signal)."""
+        key = lesson.strip().lower()
+        if any(key == old.strip().lower() for old in self.lessons):
+            return False
+        self.lessons.append(lesson.strip())
+        self.lessons = self.lessons[-self.max_lessons :]  # recent lessons matter most
+        return True
+
+
+@dataclass
+class Result:
+    passed: bool
+    attempt: str
+    trials: int
+    lessons: list[str]
+    stop_reason: str
+
+
+def reflexion(
+    task: str, actor: Actor, evaluate: Evaluator, reflect: Reflector, max_trials: int = 4, memory: Memory | None = None
+) -> Result:
+    memory = memory or Memory()
+    attempt = ""
+    for trial in range(1, max_trials + 1):
+        attempt = actor(task, list(memory.lessons))
+        passed, feedback = evaluate(attempt)
+        if passed:
+            return Result(True, attempt, trial, memory.lessons, "passed")
+        lesson = reflect(task, attempt, feedback)
+        if not memory.add(lesson):
+            return Result(False, attempt, trial, memory.lessons, "repeated lesson: not learning")
+    return Result(False, attempt, max_trials, memory.lessons, "out of trials")
+
+
+REFLECT_PROMPT = """Task: {task}
+Your attempt: {attempt}
+What went wrong: {feedback}
+In ONE sentence, state the specific mistake and what to do differently next time.
+Don't restate the task. Don't apologise."""
+```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| Reflexion (research implementation) | Open-source (paper release) | Reference implementation of the Actor/Evaluator/Self-Reflection loop with episodic memory |
-| LangGraph | Framework | Explicit multi-node graphs suited to modeling separate Actor/Evaluator/Reflection roles |
-| DeepEval / RAGAS | Evaluation libraries | Can serve as the Evaluator role when the task has RAG- or generation-quality dimensions |
-| Test runners (pytest, jest, etc.) | General tooling | The most reliable Evaluator for code-generation Reflexion loops |
+| Tool | Notes |
+|---|---|
+| noahshinn/reflexion | Reference implementation from the paper |
+| LangGraph | Reflection and Reflexion agent templates |
+| DSPy | Optimizes prompts from feedback, a related approach at the program level |
 
 ## Related Patterns
 
-- **[LLM-as-Judge](/AI-Engineering-Patterns/patterns/observability-and-evaluation/llm-as-judge/)** — an offline evaluation harness; this pattern's Evaluator role can use LLM-as-Judge techniques, but Reflexion applies them inside a live retry loop rather than in batch evaluation.
-- **[Loop Termination](/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/)** — supplies the stopping logic this pattern needs to avoid looping indefinitely on an unsolvable task.
-- **[Maker–Verifier Split](/AI-Engineering-Patterns/patterns/loop-engineering/maker-verifier-split/)** — the structural principle behind keeping the Evaluator independent of the Actor.
-- **[No-Progress Detection](/AI-Engineering-Patterns/patterns/loop-engineering/no-progress-detection/)** — detects when successive Reflexion attempts stop improving, independent of hitting the attempt ceiling.
+- [Maker–Verifier Split](maker-verifier-split.md) provides the independent evaluator.
+- [No-Progress Detection](no-progress-detection.md) catches stalls that de-duplication misses.
+- [Loop Termination](loop-termination.md) supplies the outer stop rules.
+- [Graph of Thoughts](../graph-patterns/graph-of-thoughts.md) combines many attempts instead of improving one.
 
 ## Further Reading
 
-- [Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)](https://arxiv.org/abs/2303.11366)
-- [ReAct: Synergizing Reasoning and Acting in Language Models (Yao et al., 2022)](https://arxiv.org/abs/2210.03629)
-- [What Is Loop Engineering? A Complete Guide from Prompt to Harness Engineering — Tosea.ai](https://tosea.ai/blog/loop-engineering-ai-agents-complete-guide-2026)
+- [Reflexion: Language Agents with Verbal Reinforcement Learning](https://arxiv.org/abs/2303.11366), Shinn et al., 2023
+- [Self-Refine: Iterative Refinement with Self-Feedback](https://arxiv.org/abs/2303.17651), Madaan et al., 2023
+- [Large Language Models Cannot Self-Correct Reasoning Yet](https://arxiv.org/abs/2310.01798), Huang et al., 2023. Why the evaluator must be external.

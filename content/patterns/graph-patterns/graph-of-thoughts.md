@@ -2,203 +2,187 @@
 title: Graph of Thoughts
 pillar: graph-patterns
 status: emerging
-tags: [reasoning, graph, multi-path, planning, llm]
+tags: [reasoning, search, aggregation, prompting]
 related:
-  - GraphRAG
-  - Entity Resolution Graph
+  - Reflexion Loop
+  - Maker–Verifier Split
+  - Effort Scaling
+  - Loop Termination
+example: examples/graph_patterns/graph_of_thoughts.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-03"
-description: Structure LLM reasoning as a directed graph where thoughts branch, merge, and loop to solve complex problems that linear chains cannot.
+last_updated: "2026-11"
+description: Let a program, not the model, run reasoning as a graph. Generate several candidates, score them, merge the best, refine, and stop on a score or a budget.
 sidebar:
-  order: 2
+  order: 3
 ---
 
 ## What It Is
 
-Graph of Thoughts (GoT) structures LLM reasoning as a directed graph rather than a linear chain. Each node is a partial solution or reasoning step. Edges represent transformations — refinement, aggregation, or branching. This allows the model to explore multiple approaches in parallel, merge the best parts, and iteratively refine, producing higher-quality outputs for complex multi-step problems.
+Chain-of-thought is a line, and Tree-of-Thoughts is a tree: branch, score, prune. Graph of Thoughts (Besta et al., 2023) adds the operation trees lack: **aggregation**, merging several partial solutions into one. With refinement loops on top, the thoughts form a graph.
+
+The orchestrating *program* decides the graph's shape: how many branches, which to keep, when to merge, when to stop. The model is called at each node to generate, merge or refine. Scores ideally come from a programmatic check rather than the model's opinion of itself.
 
 ## The Problem It Solves
 
-Chain-of-thought (CoT) prompting produces a single linear chain of reasoning. If the model makes a wrong step early, the entire chain follows the wrong path. There is no backtracking, no parallel exploration, and no way to combine partial solutions from different approaches.
+Some tasks have the property that different attempts get different parts right. One draft sorts the first half correctly, another the second half. One plan handles the edge cases and another has the better structure. Picking the single best attempt throws away the other attempts' good parts. Asking the model to "try again" throws away all of them.
 
-- **Sorting a list**: CoT must process linearly. GoT can split the list, sort sub-lists in parallel, and merge.
-- **Writing code**: CoT generates one solution. GoT can explore multiple approaches, evaluate each, and combine the best elements.
-- **Planning**: CoT commits to one plan. GoT can maintain multiple plan branches and converge on the strongest.
-
-Linear reasoning is a bottleneck for problems that benefit from divide-and-conquer, parallel exploration, or iterative refinement.
+Aggregation keeps them. That's the specific gap this pattern fills, and if your task doesn't have that property, a simpler pattern will do.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart TD
-    A["Initial problem"] --> B["Decompose into reasoning branches"]
-    B --> C1["Branch A: generate partial solution"]
-    B --> C2["Branch B: generate partial solution"]
-    B --> C3["Branch C: generate partial solution"]
-    C1 --> D1["Score A"]
-    C2 --> D2["Score B"]
-    C3 --> D3["Score C"]
-    D1 --> E["Aggregate strongest branches"]
-    D2 --> E
-    D3 --> E
-    E --> F["Refine merged result"]
-    F --> G{"Quality threshold met?"}
-    G -->|"No"| B
-    G -->|"Yes"| H["Final answer"]
+    T["Task"] --> G1["Generate #1"]
+    T --> G2["Generate #2"]
+    T --> G3["Generate #3"]
+    G1 & G2 & G3 --> S["Score each<br/>(programmatic check if possible)"]
+    S --> K["Keep top k"]
+    K --> A["Aggregate: merge the kept thoughts"]
+    A --> R["Refine"]
+    R --> D{"Score ≥ target<br/>or budget spent?"}
+    D -->|"no"| K
+    D -->|"yes"| B["Best thought + its lineage"]
 </pre>
 
-1. **Decompose** — Break the problem into sub-problems or generate alternative approaches.
-2. **Generate** — For each branch, produce a partial solution using the LLM.
-3. **Score** — Evaluate each branch using the LLM as a judge or an external evaluator.
-4. **Aggregate** — Merge the best branches. Aggregation can be simple selection, weighted combination, or LLM-driven synthesis.
-5. **Refine** — Pass the aggregated result through one or more refinement steps.
-6. **Repeat** — Loop until a quality threshold is met or a fixed number of iterations complete.
-
-The graph is constructed programmatically by an orchestrator, not by the LLM itself. The LLM is called at each node for generation, scoring, and aggregation.
+1. **Generate** several independent candidates. Varying the prompt or the temperature gives you diversity.
+2. **Score** each one, with a test, a validator or a metric wherever possible. LLM self-scores are the weakest option.
+3. **Keep** the top *k*.
+4. **Aggregate** them into one combined candidate, telling the model what each does well.
+5. **Refine** the merged result.
+6. **Stop** on a score threshold or a hard call budget, and return the best node with its lineage, the graph path that produced it.
 
 ## When to Use It
 
-- Problems that are naturally decomposable into independent sub-problems (sorting, code generation, document analysis).
-- Tasks where exploring multiple approaches and picking the best yields significantly better results than a single linear attempt.
-- Scenarios where partial solutions from different approaches can be meaningfully combined.
-- Quality-critical tasks where the cost of multiple LLM calls is justified by output quality improvement.
+- Tasks where partial solutions can be combined: sorting and merging, set operations, document merging, plan synthesis, code where different attempts pass different tests.
+- A reliable scorer exists (tests, validators, metrics).
+- Quality matters more than latency and cost: offline jobs, high-value answers.
 
-## When not to Use It
+## When NOT to Use It
 
-- Simple questions with single-step answers. The overhead of graph construction and multiple LLM calls is not justified.
-- Latency-sensitive requests. GoT requires multiple sequential and parallel LLM calls, which adds significant latency.
-- Tasks where the LLM already achieves near-perfect accuracy with a single call or simple CoT.
-- When budget constraints prevent the 3-10x token cost increase over a single call.
+- **Interactive latency budgets.** Ten to thirty model calls per answer isn't a chat feature.
+- **No reliable scorer.** If scores come from the model rating itself, the graph mostly amplifies its biases. Use a [Maker–Verifier Split](../loop-engineering/maker-verifier-split.md) with an independent check instead.
+- **Tasks with one good path.** If attempts don't have complementary strengths, best-of-n sampling is cheaper and just as good.
 
 ## Trade-offs
 
-1. **Token cost** — GoT uses 3-10x more tokens than a single LLM call due to branching, scoring, and aggregation. Each node is a separate inference call.
-2. **Latency** — Even with parallel branch execution, the sequential depth of the graph (decompose, generate, score, merge, refine) adds significant latency.
-3. **Orchestration complexity** — Building the graph, managing state, handling failures at individual nodes, and implementing the scoring/aggregation logic requires substantial engineering.
-4. **Diminishing returns** — For many tasks, Tree-of-Thought or even simple best-of-N sampling achieves most of GoT's quality improvement at lower complexity.
+- **Cost multiplies** with branches × rounds × operations. A hard call budget is not optional.
+- **Orchestration complexity.** The graph is code you write and maintain per task type. It doesn't generalize for free.
+- **Merges can regress.** Aggregation can lose a correct detail from one input. Score after merging, and keep the best-so-far rather than assuming the newest is best.
 
 ## Failure Modes
 
-### Scoring Function Misalignment
-**Trigger**: The scoring LLM evaluates thought nodes on surface-level quality (fluency, length) rather than logical correctness.
-**Symptom**: The graph selects confidently wrong branches over tentative but correct ones. Final merged output inherits errors from the highest-scored (but incorrect) paths.
-**Mitigation**: Design scoring prompts that explicitly evaluate factual accuracy and logical consistency, not just prose quality. Validate the scorer against a held-out set of known-correct and known-incorrect intermediate steps.
+**Score inflation.** The model scores its own merged output highly because it wrote it. Use external scoring, or at least a separate judge prompt that doesn't know which candidate is the merge.
 
-### Merge Step Drops Key Information
-**Trigger**: The aggregation prompt that merges solutions from multiple branches has a limited context window and must summarize.
-**Symptom**: Critical details from individual branches are lost during merging. The final answer is syntactically coherent but missing nuances that individual branches captured.
-**Mitigation**: Use structured extraction from each branch before merging (key claims, numerical results, constraints). Merge from structured data, not raw text.
+**Diversity collapse.** All branches come back nearly identical, so aggregation has nothing to combine. Vary the instructions per branch (different approaches, not just different random seeds).
 
-### Decomposition Explosion
-**Trigger**: The decomposition step splits a problem into too many sub-problems, each of which branches further.
-**Symptom**: Token costs and latency grow exponentially. Many branches explore trivial or redundant variations. Most of the compute is wasted.
-**Mitigation**: Limit branching factor and graph depth. Score sub-problems for independence — discard those that are redundant or trivially solvable. Set a total token budget for the entire GoT execution.
+**Unbounded refinement.** Each round improves the score by 0.01, so the loop keeps going. Combine the score threshold with a call budget and a [no-progress check](../loop-engineering/no-progress-detection.md).
 
 ## Implementation Example
 
+A small GoT controller: generate, score with a pluggable scorer, keep top-k, aggregate, refine, stop on threshold or budget, and return the lineage. In the test, the "model" can only sort halves. No single generation is fully correct, and aggregation produces the correct answer (refine is a no-op, so the credit is clearly the merge's).
+
+```bash
+cd examples && pytest graph_patterns/test_graph_of_thoughts.py
+```
+
+<!-- example: examples/graph_patterns/graph_of_thoughts.py -->
 ```python
+"""Graph of Thoughts.
+
+Reasoning as an explicit graph that the *program* controls: generate several
+candidate thoughts, score them, keep the best, merge them (the operation
+chains and trees don't have), refine, and stop on a score threshold or a call
+budget. The LLM is called at each node; it never decides the graph's shape.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
 
-
-class NodeType(Enum):
-    GENERATE = "generate"
-    SCORE = "score"
-    AGGREGATE = "aggregate"
-    REFINE = "refine"
+LLM = Callable[[str], str]
+Scorer = Callable[[str], float]  # prefer a programmatic check over an LLM score when one exists
 
 
 @dataclass
-class ThoughtNode:
-    node_id: str
-    node_type: NodeType
-    content: str = ""
-    score: float = 0.0
-    children: list[str] = field(default_factory=list)
-    parents: list[str] = field(default_factory=list)
+class Thought:
+    id: int
+    text: str
+    score: float
+    parents: list[int] = field(default_factory=list)
+    op: str = "generate"
 
 
+@dataclass
 class GraphOfThoughts:
-    def __init__(self):
-        self._nodes: dict[str, ThoughtNode] = {}
-        self._counter = 0
+    llm: LLM
+    score: Scorer
+    branches: int = 3
+    keep: int = 2
+    max_rounds: int = 3
+    good_enough: float = 0.95
+    max_calls: int = 30
+    nodes: list[Thought] = field(default_factory=list)
+    calls: int = 0
 
-    def _next_id(self) -> str:
-        self._counter += 1
-        return f"node_{self._counter}"
+    def _call(self, prompt: str) -> str:
+        if self.calls >= self.max_calls:
+            raise RuntimeError("thought budget exhausted")
+        self.calls += 1
+        return self.llm(prompt)
 
-    def add_thought(
-        self,
-        node_type: NodeType,
-        content: str,
-        parents: list[str] | None = None,
-    ) -> str:
-        node_id = self._next_id()
-        node = ThoughtNode(
-            node_id=node_id,
-            node_type=node_type,
-            content=content,
-            parents=parents or [],
-        )
-        self._nodes[node_id] = node
-        for parent_id in node.parents:
-            if parent_id in self._nodes:
-                self._nodes[parent_id].children.append(node_id)
-        return node_id
+    def _add(self, text: str, parents: list[int], op: str) -> Thought:
+        t = Thought(len(self.nodes), text, self.score(text), parents, op)
+        self.nodes.append(t)
+        return t
 
-    def score_node(self, node_id: str, score: float) -> None:
-        self._nodes[node_id].score = score
+    def solve(self, task: str) -> Thought:
+        frontier = [self._add(self._call(f"GENERATE #{i}\n{task}"), [], "generate") for i in range(self.branches)]
+        best = max(frontier, key=lambda t: t.score)
+        try:
+            for _ in range(self.max_rounds):
+                if best.score >= self.good_enough:
+                    break
+                top = sorted(frontier, key=lambda t: -t.score)[: self.keep]
+                merged = self._add(
+                    self._call("AGGREGATE\n" + task + "\n" + "\n---\n".join(t.text for t in top)),
+                    [t.id for t in top],
+                    "aggregate",
+                )
+                refined = self._add(self._call(f"REFINE\n{task}\n{merged.text}"), [merged.id], "refine")
+                frontier = top + [merged, refined]
+                best = max(frontier + [best], key=lambda t: t.score)
+        except RuntimeError:
+            pass  # out of budget: return the best thought so far
+        return best
 
-    def get_top_branches(self, node_ids: list[str], k: int = 2) -> list[str]:
-        scored = [(nid, self._nodes[nid].score) for nid in node_ids]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [nid for nid, _ in scored[:k]]
-
-    def get_node(self, node_id: str) -> ThoughtNode:
-        return self._nodes[node_id]
-
-
-def solve_with_got(problem: str, num_branches: int = 3) -> str:
-    graph = GraphOfThoughts()
-    root = graph.add_thought(NodeType.GENERATE, problem)
-
-    branch_ids = []
-    for i in range(num_branches):
-        branch_content = f"Approach {i + 1} for: {problem}"
-        bid = graph.add_thought(NodeType.GENERATE, branch_content, [root])
-        graph.score_node(bid, evaluate_branch(branch_content))
-        branch_ids.append(bid)
-
-    top_ids = graph.get_top_branches(branch_ids, k=2)
-    top_contents = [graph.get_node(nid).content for nid in top_ids]
-    merged = f"Combined solution from: {'; '.join(top_contents)}"
-    merge_id = graph.add_thought(NodeType.AGGREGATE, merged, top_ids)
-
-    refined = f"Refined: {merged}"
-    graph.add_thought(NodeType.REFINE, refined, [merge_id])
-    return refined
-
-
-def evaluate_branch(content: str) -> float:
-    return len(content) / 100.0
+    def lineage(self, thought: Thought) -> list[str]:
+        """How the answer was reached; useful for debugging and for showing work."""
+        out, stack = [], [thought.id]
+        while stack:
+            t = self.nodes[stack.pop()]
+            out.append(f"#{t.id} {t.op} score={t.score:.2f}")
+            stack.extend(t.parents)
+        return out
 ```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| LangGraph | Framework | Arbitrary graph-based LLM workflows with state management |
-| Microsoft AutoGen | Multi-agent framework | Supports branching conversation patterns between agents |
-| DSPy | Optimization framework | Composable modules that can implement GoT-style pipelines |
-| Custom orchestrator | DIY | Most GoT implementations are bespoke due to problem-specific graph structures |
+| Tool | Notes |
+|---|---|
+| spcl/graph-of-thoughts | Reference implementation from the paper's authors |
+| LangGraph | General graph orchestration to build GoT-style controllers |
+| DSPy | Programmatic pipelines with optimizable modules; good for scorers and refiners |
 
 ## Related Patterns
 
-- **[GraphRAG](/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/)** — Graph structure for retrieval context. GoT is graph structure for reasoning.
-- **[Entity Resolution Graph](/AI-Engineering-Patterns/patterns/graph-patterns/entity-resolution-graph/)** — Complementary graph pattern focused on data quality rather than reasoning.
+- [Reflexion Loop](../loop-engineering/reflexion-loop.md) improves one line of attempts with lessons learned. GoT combines many attempts.
+- [Maker–Verifier Split](../loop-engineering/maker-verifier-split.md) is the right way to get scores you can trust.
+- [Effort Scaling](../cost-and-efficiency/effort-scaling.md) decides which tasks deserve a GoT budget at all.
+- [Loop Termination](../loop-engineering/loop-termination.md) applies to the refinement loop.
 
 ## Further Reading
 
-- [Graph of Thoughts: Solving Elaborate Problems with Large Language Models](https://arxiv.org/abs/2308.09687)
-- [Beyond Chain-of-Thought: A Survey of Chain-of-X Paradigms](https://arxiv.org/abs/2404.15676)
-- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
+- [Graph of Thoughts: Solving Elaborate Problems with Large Language Models](https://arxiv.org/abs/2308.09687), Besta et al., 2023
+- [Tree of Thoughts: Deliberate Problem Solving with Large Language Models](https://arxiv.org/abs/2305.10601), Yao et al., 2023

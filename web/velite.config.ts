@@ -1,6 +1,14 @@
 import { defineConfig, defineCollection, s } from 'velite'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
+import rehypePrettyCode from 'rehype-pretty-code'
+import rehypeSlug from 'rehype-slug'
+import path from 'node:path'
+import { remarkSiteLinks } from './lib/remark-site-links'
+
+// velite runs from web/; content and examples live one level up.
+const REPO_ROOT = path.resolve(process.cwd(), '..')
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
 
 const PILLARS = [
   'inference-and-serving',
@@ -29,6 +37,8 @@ const patterns = defineCollection({
     contributors: s.array(s.string()).optional(),
     last_updated: s.string().optional(),
     sidebar: s.object({ order: s.number() }).optional(),
+    // Repo-relative path to the runnable example, e.g. examples/reliability/circuit_breaker.py
+    example: s.string().optional(),
     // slug = pillar/pattern-name, e.g. retrieval-and-memory/hybrid-search
     slug: s.path().transform(p => p.replace(/^content\/patterns\//, '')),
     body: s.markdown(),
@@ -77,7 +87,9 @@ export default defineConfig({
   },
   collections: { patterns, caseStudies, guides },
   markdown: {
-    remarkPlugins: [remarkMath],
-    rehypePlugins: [rehypeKatex],
+    // Cross-reference links are rewritten to site routes, not copied as assets.
+    copyLinkedFiles: false,
+    remarkPlugins: [remarkMath, remarkSiteLinks({ root: REPO_ROOT, basePath: BASE_PATH })],
+    rehypePlugins: [rehypeSlug, rehypeKatex, [rehypePrettyCode, { theme: 'github-dark', keepBackground: false }]],
   },
 })

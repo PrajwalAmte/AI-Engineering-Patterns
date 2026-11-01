@@ -2,39 +2,47 @@ import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { Navbar } from '@/components/layout/Navbar'
+import { Footer } from '@/components/layout/Footer'
+import { OG_IMAGE, SITE_DESCRIPTION, SITE_NAME, SITE_TAGLINE, SITE_URL } from '@/lib/site'
 import './globals.css'
 
 const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] })
 const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin'] })
 
-const SITE_URL = 'https://prajwalamte.github.io/AI-Engineering-Patterns'
-const SITE_NAME = 'AI Engineering Patterns'
-const SITE_DESCRIPTION =
-  'A structured pattern library for engineers building production AI systems. Named patterns with trade-offs, implementation guides, and code examples for RAG, agents, inference, governance, and more.'
+// Optional, privacy-friendly analytics. Set NEXT_PUBLIC_GOATCOUNTER_URL at build time
+// (e.g. https://yourname.goatcounter.com/count) to turn it on; unset means no tracking.
+const GOATCOUNTER_URL = process.env.NEXT_PUBLIC_GOATCOUNTER_URL
 
 export const metadata: Metadata = {
-  metadataBase: new URL(SITE_URL),
+  metadataBase: new URL(`${SITE_URL}/`),
   title: {
-    default: SITE_NAME,
-    template: `%s | ${SITE_NAME}`,
+    default: `${SITE_NAME}: ${SITE_TAGLINE}`,
+    template: `%s · ${SITE_NAME}`,
   },
   description: SITE_DESCRIPTION,
   keywords: [
-    'AI Engineering Patterns',
-    'production AI systems',
-    'GenAI architecture',
+    'LLM engineering patterns',
+    'production LLM',
     'RAG patterns',
-    'agent engineering',
-    'LLM patterns',
+    'AI agents',
+    'LLM guardrails',
+    'LLM evaluation',
     'AI system design',
-    'machine learning engineering',
+    'LLMOps',
   ],
   openGraph: {
     type: 'website',
     siteName: SITE_NAME,
-    title: SITE_NAME,
+    title: `${SITE_NAME}: ${SITE_TAGLINE}`,
     description: SITE_DESCRIPTION,
     url: `${SITE_URL}/`,
+    images: [OG_IMAGE],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: `${SITE_NAME}: ${SITE_TAGLINE}`,
+    description: SITE_DESCRIPTION,
+    images: [OG_IMAGE.url],
   },
 }
 
@@ -49,7 +57,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ThemeProvider>
           <Navbar />
           <div className="flex-1">{children}</div>
+          <Footer />
         </ThemeProvider>
+        {GOATCOUNTER_URL && (
+          <script data-goatcounter={GOATCOUNTER_URL} async src="https://gc.zgo.at/count.js" />
+        )}
       </body>
     </html>
   )

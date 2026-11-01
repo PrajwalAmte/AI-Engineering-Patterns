@@ -1,238 +1,192 @@
 ---
-title: Model Card Pattern
+title: Model Card
 pillar: governance
 status: validated-in-production
-tags: [governance, documentation, compliance, model-management]
+tags: [governance, documentation, compliance, evaluation]
 related:
-  - Data Lineage for AI
-  - Responsible AI Checklist Pattern
-  - Model Versioning & Deprecation
-  - Policy-as-Code Pattern
+  - Human-in-the-Loop
+  - Prompt Canary Deployment
+  - LLM-as-Judge
+  - Data Contract
+example: examples/governance/model_card.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-03"
-description: Standardized documentation of model capabilities, limitations, training data, and known failure modes.
+last_updated: "2026-11"
+description: Document each AI feature's intended use, limits, data and evals as data next to the code, and fail CI when the card is incomplete or its evals are stale.
 sidebar:
-  order: 1
+  order: 3
 ---
 
 ## What It Is
 
-A model card is a standardized document that accompanies every model deployment in your organization. It describes the model's intended use, capabilities, limitations, training data, evaluation results, known failure modes, and operational requirements. It is the "nutrition label" for an AI model — consumed by engineers, product managers, compliance teams, and incident responders.
+Model cards come from Mitchell et al. (2019): a short, standard document describing what a model is for, what it isn't for, how it was evaluated, and where it falls short. This page adapts the idea in two ways for teams shipping LLM features:
+
+1. **Card the system, not just the model.** Users experience "the support bot", which is a base model, a prompt version, retrieval sources and guardrails together. That's the unit to document.
+2. **Make the card executable.** It lives in the repo as data, gets rendered to markdown, and CI fails when it's incomplete or out of date. A wiki page goes stale within a quarter. A failing build gets attention.
 
 ## The Problem It Solves
 
-When a model misbehaves in production, the first questions are: "What is this model trained on?", "What are its known limitations?", and "Who owns it?" Without model cards, this information is scattered across Slack threads, experiment notebooks, and the memories of the original developers — who may have moved on.
+Ask a team "what is this assistant *not* supposed to do?", "when was it last evaluated?" or "which model version is in production?" and you often get three different answers, or none. Then:
 
-Specific failure scenarios:
-
-- A customer reports biased outputs. Nobody knows what training data was used or what fairness evaluations were run.
-- A new engineer deploys a model that was explicitly documented as "not suitable for medical advice" — but there was no documentation to find.
-- A model version is rolled back during an incident, but the rollback target's limitations are unknown.
-- An audit asks for evidence of responsible AI practices. The team scrambles to reconstruct evaluation results after the fact.
+- A product manager launches it to a use case it was never evaluated for.
+- An auditor or enterprise customer asks for documentation, and someone spends a week reconstructing it.
+- A model alias changes underneath you, and the "evaluation results" on the wiki describe a model that's no longer running.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart LR
-    A["Train, evaluate, and test model"] --> B["Populate model card template"]
-    B --> C["Cross-functional review"]
-    C --> D{"Card complete and approved?"}
-    D -->|"No"| E["Revise evidence and risk notes"]
-    E --> B
-    D -->|"Yes"| F["Version and publish card with model"]
-    F --> G["Deploy model + card as linked artifacts"]
-    G --> H["Update card on retrain, fine-tune, or policy changes"]
+    C["card.py / card.yaml<br/>(in the repo)"] --> V{"CI checks"}
+    V -->|"empty sections"| F["Fail"]
+    V -->|"model is an alias"| F
+    V -->|"evals older than last change<br/>or older than 90 days"| F
+    V -->|"ok"| R["Render markdown → docs site / customer packet"]
 </pre>
 
-1. **Template**: Define a standard model card template with required and optional sections.
-2. **Populate during development**: The model card is filled in during development, not after. Evaluation results, training data descriptions, and limitation documentation are captured as the model is built.
-3. **Review gate**: Model cards are reviewed by at least one person outside the development team before deployment. This review checks for completeness, honesty about limitations, and appropriate risk classification.
-4. **Publish alongside the model**: The model card is versioned and deployed with the model artifact. It is accessible to anyone who can use the model.
-5. **Update on changes**: When the model is retrained, fine-tuned, or its deployment context changes, the card is updated.
+1. **Describe the system:** owner, pinned base model version, prompt version, data sources, and the human oversight in place.
+2. **State intended use and out-of-scope uses** in plain words. The out-of-scope list is usually the most valuable part.
+3. **List known limitations** honestly ("English only", "articles over 90 days old may be stale"). An empty list means nobody looked.
+4. **Attach eval results** with the dataset, metric, value and date.
+5. **Let CI enforce freshness.** Evals must postdate the last model or prompt change, and must not be older than your policy allows.
 
 ## When to Use It
 
-- Your organization deploys models that affect users, decisions, or business outcomes.
-- Multiple teams use shared models and need to understand their capabilities and limitations.
-- Compliance or regulatory requirements mandate documentation of AI systems (EU AI Act, NIST AI RMF).
-- You have experienced incidents where lack of model documentation delayed resolution.
-- You are building trust with customers or partners who ask "how does your AI work?"
+- Any AI feature used by customers or by other teams.
+- Enterprise sales or regulated settings (the EU AI Act, NIST AI RMF and sector rules all ask for this kind of documentation).
+- More than one AI feature in production, so people need a consistent place to look.
 
-## When not to Use It
+## When NOT to Use It
 
-- You are using a third-party API (OpenAI, Anthropic) without any fine-tuning or customization. The provider publishes their own model documentation. Your responsibility is documenting your system's use of the model, not the model itself.
-- You are in rapid experimentation with throwaway models that will never reach production. The overhead of full documentation is not justified for models with a lifespan of days.
-- The model is a simple, well-understood algorithm (logistic regression for A/B test analysis) with no novel risks. A brief README is sufficient.
+- **Prototypes and internal experiments.** A README is enough until real users depend on it.
+- **As a substitute for evals.** A card *reports* evaluation. If the evals don't exist, the card should fail, not paper over it.
 
 ## Trade-offs
 
-1. **Documentation overhead** — Creating and maintaining model cards takes time. Without organizational commitment, they become outdated quickly.
-2. **False completeness** — A filled-in template gives the appearance of due diligence even if the evaluations were superficial. The quality of the card depends on the quality of the evaluation.
-3. **Scope ambiguity** — For systems using multiple models (a router + multiple LLMs + an embedding model + a reranker), it is unclear whether each component needs its own card or the system gets one card. Both approaches have merits.
-4. **Honest limitations** — Documenting known failure modes requires a culture that rewards honesty over optimism. Teams may downplay limitations to avoid blocking deployment.
+- **Upkeep.** Every model or prompt change means updating evals and the card. Automating the freshness check is what makes this affordable.
+- **Honesty versus marketing.** Limitations sections tend to get softened before external release. Keep an internal version that says it plainly.
+- **Scope creep.** Cards grow into long questionnaires that nobody reads. Keep the required fields few and meaningful.
 
 ## Failure Modes
 
-### Card Drift from Reality
-**Trigger**: The model is updated (fine-tuned, retrained, or swapped for a new version) but the model card is not updated alongside it.
-**Symptom**: Teams make deployment decisions based on stale documentation. Known limitations of the new version are not communicated. Incidents occur that the card does not mention.
-**Mitigation**: Tie model card updates to the model release process — make card revision a required gate in the deployment pipeline. Automate what you can (metrics, dates, version numbers).
+**Card from launch day, never updated.** It describes the model from eighteen months ago. CI freshness checks against the last change date prevent this.
 
-### Checkbox Culture
-**Trigger**: Model cards become a compliance requirement that teams fill out mechanically to pass review gates.
-**Symptom**: Cards are filled with generic language ("model may produce inaccurate outputs") that applies to any model. No team-specific limitations, no real evaluation data. The card adds no actual value.
-**Mitigation**: Require specific eval results with test datasets, not just prose descriptions. Reject cards that do not include measured failure rates on defined test suites.
+**Aliases instead of versions.** "Model: gpt-4o" or "claude-sonnet-latest" says nothing about what actually ran. Require pinned version identifiers.
 
-### Missing Downstream Context
-**Trigger**: The card documents the model in isolation but does not describe how it is used in the system (what inputs it receives, what actions are gated on its output).
-**Symptom**: A model rated safe for one use case is deployed in a higher-risk context. The card said "not recommended for medical use" but the downstream team did not read — or did not know their pipeline feeds a medical product.
-**Mitigation**: Include a "Known Deployments" section that lists active consumers. Require consuming teams to acknowledge the card's limitation section before integration.
+**Evals with no lineage.** "Accuracy 94%" on an unnamed dataset can't be reproduced or compared. Name the dataset and version, and keep the eval code in the repo.
 
 ## Implementation Example
 
-Model card as a structured YAML document stored alongside the model artifact:
+A model card as a dataclass, with CI checks for empty sections, aliased model names, evals older than the last change, and evals past a maximum age, plus a markdown renderer for docs and customer packets.
 
-```yaml
-model_card:
-  version: "1.0"
-  last_updated: "2026-03-15"
-
-model:
-  name: "customer-intent-classifier-v3"
-  version: "3.2.1"
-  type: "fine-tuned-bert-base"
-  owner: "ml-platform-team"
-  contact: "ml-platform@company.com"
-
-intended_use:
-  primary: "Classify customer support messages into intent categories"
-  users: "Customer support routing system, support analytics dashboard"
-  out_of_scope:
-    - "Sentiment analysis (use sentiment-classifier-v2 instead)"
-    - "Languages other than English and Spanish"
-    - "Messages longer than 512 tokens"
-
-training_data:
-  description: "12 months of labeled customer support tickets"
-  size: "2.4M examples across 47 intent categories"
-  label_source: "Human-annotated by trained support agents"
-  known_gaps:
-    - "Under-represented: billing disputes in Spanish (<500 examples)"
-    - "Not represented: cryptocurrency-related intents (new product line)"
-  data_date_range: "2025-01 to 2025-12"
-
-evaluation:
-  test_set: "Held-out 10% split, stratified by intent category"
-  metrics:
-    accuracy: 0.94
-    macro_f1: 0.89
-    worst_class_f1: 0.71
-    worst_class: "account_recovery_2fa"
-  fairness:
-    evaluated_dimensions: ["language"]
-    english_accuracy: 0.95
-    spanish_accuracy: 0.91
-    notes: "Spanish accuracy lower due to smaller training set"
-
-limitations:
-  - "Accuracy drops to ~0.78 on messages mixing multiple intents"
-  - "Does not handle code-switched (Spanglish) messages well"
-  - "Confidence calibration is poor above 0.95 — high confidence does not reliably indicate correctness"
-  - "New intent categories require retraining; zero-shot performance on unseen intents is ~0.30"
-
-operational:
-  latency_p50_ms: 12
-  latency_p99_ms: 45
-  throughput_rps: 500
-  memory_mb: 420
-  dependencies:
-    - "transformers >= 4.35"
-    - "tokenizers >= 0.15"
-
-risks:
-  risk_level: "medium"
-  failure_impact: "Misrouted support tickets, delayed customer resolution"
-  mitigation: "Low-confidence predictions (<0.6) routed to human triage"
-
-changelog:
-  - version: "3.2.1"
-    date: "2026-03-15"
-    changes: "Added 15K Spanish examples, retrained with updated tokenizer"
-  - version: "3.1.0"
-    date: "2025-11-01"
-    changes: "Initial production deployment"
+```bash
+cd examples && pytest governance/test_model_card.py
 ```
 
-Validation script to enforce model card completeness:
-
+<!-- example: examples/governance/model_card.py -->
 ```python
-import yaml
+"""Model Card, as a CI check.
+
+The card lives next to the code as data, not as a wiki page. CI renders it to
+markdown and fails the build when it's incomplete or stale: missing intended
+use, no stated limitations, no eval results, or evals older than the model or
+prompt they describe.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
 
 
-REQUIRED_SECTIONS = [
-    "model.name",
-    "model.version",
-    "model.owner",
-    "intended_use.primary",
-    "intended_use.out_of_scope",
-    "training_data.description",
-    "training_data.known_gaps",
-    "evaluation.metrics",
-    "limitations",
-    "operational.latency_p50_ms",
-    "risks.risk_level",
-    "risks.mitigation",
-]
+@dataclass
+class EvalResult:
+    name: str
+    metric: str
+    value: float
+    run_on: date
+    dataset: str
 
 
-def validate_model_card(card_path: str) -> list[str]:
-    with open(card_path) as f:
-        card = yaml.safe_load(f)
+@dataclass
+class ModelCard:
+    system: str  # the AI feature, not just the base model
+    owner: str
+    base_model: str  # pinned version, not an alias
+    prompt_version: str
+    changed_on: date  # when base_model or prompt_version last changed
+    intended_use: list[str]
+    out_of_scope: list[str]
+    limitations: list[str]
+    data_sources: list[str]
+    evals: list[EvalResult] = field(default_factory=list)
+    human_oversight: str = ""
 
-    violations = []
-    for path in REQUIRED_SECTIONS:
-        parts = path.split(".")
-        current = card
-        for part in parts:
-            if not isinstance(current, dict) or part not in current:
-                violations.append(f"Missing required field: {path}")
-                break
-            current = current[part]
-        else:
-            if current is None or current == "" or current == []:
-                violations.append(f"Empty required field: {path}")
+    def problems(self, today: date, max_eval_age_days: int = 90) -> list[str]:
+        out = []
+        for name in ("intended_use", "out_of_scope", "limitations", "data_sources"):
+            if not getattr(self, name):
+                out.append(f"{name} is empty")
+        if self.base_model.endswith(("latest", "-preview")) or self.base_model.count("-") < 1:
+            out.append(f"base_model {self.base_model!r} looks like an alias; pin a version")
+        if not self.evals:
+            out.append("no eval results")
+        for e in self.evals:
+            if e.run_on < self.changed_on:
+                out.append(f"eval {e.name!r} predates the last model/prompt change")
+            if (today - e.run_on).days > max_eval_age_days:
+                out.append(f"eval {e.name!r} is older than {max_eval_age_days} days")
+        if not self.human_oversight:
+            out.append("human_oversight not described")
+        return out
 
-    limitations = card.get("limitations", [])
-    if isinstance(limitations, list) and len(limitations) < 2:
-        violations.append("Model card should document at least 2 known limitations")
+    def to_markdown(self) -> str:
+        bullets = lambda items: "\n".join(f"- {i}" for i in items)  # noqa: E731
+        rows = "\n".join(
+            f"| {e.name} | {e.metric} | {e.value:.3g} | {e.dataset} | {e.run_on.isoformat()} |" for e in self.evals
+        )
+        return f"""# Model card: {self.system}
 
-    out_of_scope = (card.get("intended_use", {}).get("out_of_scope") or [])
-    if not out_of_scope:
-        violations.append("Model card must document out-of-scope uses")
+**Owner:** {self.owner} · **Model:** `{self.base_model}` · **Prompt:** `{self.prompt_version}`
 
-    return violations
+## Intended use
+{bullets(self.intended_use)}
+
+## Out of scope
+{bullets(self.out_of_scope)}
+
+## Known limitations
+{bullets(self.limitations)}
+
+## Data sources
+{bullets(self.data_sources)}
+
+## Evaluation
+| Eval | Metric | Value | Dataset | Run on |
+|---|---|---|---|---|
+{rows}
+
+## Human oversight
+{self.human_oversight}
+"""
 ```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| Hugging Face Model Cards | Platform feature | Markdown-based model cards with structured metadata sections |
-| Google Model Cards Toolkit | Open-source | Python library for generating model cards from evaluation results |
-| MLflow Model Registry | Open-source | Model versioning with description fields (not full model cards out of the box) |
-| Weights & Biases | Managed platform | Model metadata and evaluation tracking, exportable as model card data |
-| FMTI (Foundation Model Transparency Index) | Framework | Comprehensive transparency framework for foundation models |
+| Tool | Notes |
+|---|---|
+| Hugging Face model cards | The most widely used format for model weights |
+| Google Model Card Toolkit | Structured schema and rendering |
+| Provider system cards | Anthropic, OpenAI and Google publish cards for their models; reference them from yours |
 
 ## Related Patterns
 
-- **[Data Lineage for AI](/AI-Engineering-Patterns/patterns/governance/data-lineage/)** — Model cards reference training data; lineage provides the full provenance chain.
-- **[Responsible AI Checklist Pattern](/AI-Engineering-Patterns/patterns/governance/responsible-ai-checklist/)** — The pre-deployment review that verifies model card completeness and accuracy.
-- **[Model Versioning & Deprecation](/AI-Engineering-Patterns/patterns/governance/model-versioning/)** — Model cards are versioned alongside model artifacts.
-- **[Policy-as-Code Pattern](/AI-Engineering-Patterns/patterns/governance/policy-as-code/)** — Automated checks can enforce model card completeness as a deployment gate.
+- [Human-in-the-Loop](human-in-the-loop.md) is described in the card's oversight section.
+- [Prompt Canary Deployment](prompt-canary-deployment.md): each promotion should update the card's prompt version and eval date.
+- [LLM-as-Judge](../observability-and-evaluation/llm-as-judge.md) produces many of the eval numbers the card reports.
+- [Data Contract](../data-patterns/data-contract.md) documents the data sources the card lists.
 
 ## Further Reading
 
-- [Model Cards for Model Reporting (Mitchell et al., 2019)](https://arxiv.org/abs/1810.03993)
-- [Hugging Face Model Card Guide](https://huggingface.co/docs/hub/model-cards)
+- [Model Cards for Model Reporting](https://arxiv.org/abs/1810.03993), Mitchell et al., 2019
+- [Hugging Face model card guide](https://huggingface.co/docs/hub/model-cards)
 - [NIST AI Risk Management Framework](https://www.nist.gov/itl/ai-risk-management-framework)
-- [EU AI Act — Documentation Requirements](https://artificialintelligenceact.eu/)

@@ -2,230 +2,211 @@
 title: Entity Resolution Graph
 pillar: graph-patterns
 status: emerging
-tags: [graph, entity-resolution, deduplication, data-quality, linking]
+tags: [entity-resolution, deduplication, knowledge-graph, data-quality]
 related:
   - GraphRAG
-  - Data Contract Pattern
+  - Semantic Deduplication
+  - Data Contract
+example: examples/graph_patterns/entity_resolution_graph.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-03"
-description: Use graph-based approaches to deduplicate, link, and merge entity mentions across heterogeneous data sources into a unified knowledge graph.
+last_updated: "2026-11"
+description: Decide which records across sources are the same entity using a match graph, and never let one fuzzy link chain two different entities together.
 sidebar:
-  order: 3
+  order: 2
 ---
 
 ## What It Is
 
-Entity Resolution Graph is a pattern that uses graph algorithms to identify, link, and merge mentions of the same real-world entity across multiple data sources. Instead of relying purely on string matching or embedding similarity, it models candidate matches as a graph and uses connectivity, transitivity, and community detection to make resolution decisions that individual pairwise comparisons miss.
+Records from different systems ("Acme Inc." in the CRM, "ACME Incorporated" in billing, "Acme" in support tickets) become nodes in a graph. Pairs that probably refer to the same real-world entity get an edge with a score. Clusters of connected records become one canonical entity.
+
+Entity resolution (record linkage) is decades old. What makes it a pattern for AI systems is where it sits: in front of knowledge graphs and RAG indexes, where duplicate entities silently break multi-hop answers. The safeguard this page stresses is *conflict-aware* clustering.
 
 ## The Problem It Solves
 
-AI systems ingest data from many sources. The same entity (customer, product, location, concept) appears with different names, formats, and identifiers across sources:
+Without resolution, your knowledge graph holds three Acmes. Facts about Acme's contract are on one node and facts about its support tickets on another, so "does Acme have open P1s on an expiring contract?" can't be answered by traversal. The answer exists, split across three nodes.
 
-- "Microsoft Corp", "MSFT", "Microsoft Corporation" in financial data.
-- "Dr. Jane Smith", "J. Smith", "jane.smith@hospital.org" in medical records.
-- "GPT-4", "gpt-4-turbo", "OpenAI GPT4" in technical documentation.
-
-Without resolution, knowledge graphs have duplicate nodes, RAG systems retrieve fragmented context, and analytics produce wrong counts. Pairwise matching alone fails because:
-
-- It misses transitive links: A matches B, B matches C, but A does not directly match C.
-- It cannot use graph structure: an entity connected to the same neighbors is likely the same entity even if names differ.
+Naive resolution fails the other way. Plain connected components over fuzzy matches can chain "Apex Labs" to "Apex" to "Apex Dental", and two unrelated companies become one entity. The model then reports one company's outage to the other's account manager.
 
 ## How It Works
 
 <pre class="mermaid">
-flowchart TD
-    A["Mentions from source A"] --> D["Candidate generation (blocking)"]
-    B["Mentions from source B"] --> D
-    C["Mentions from source C"] --> D
-    D --> E["Pairwise similarity scoring"]
-    E --> F["Build resolution graph"]
-    F --> G["Community detection / clustering"]
-    G --> H["Merge cluster into canonical entities"]
-    H --> I["Deduplicated entity store"]
+flowchart LR
+    R["Records from all sources"] --> N["Normalize names<br/>(case, punctuation, Inc/LLC/GmbH)"]
+    N --> B["Blocking: only compare<br/>records sharing a name token"]
+    B --> S["Score pairs: name overlap<br/>+ agreeing attributes"]
+    S --> M["Merge strongest edges first"]
+    M --> C{"Merge would join records<br/>with conflicting IDs?"}
+    C -->|"yes"| X["Reject; log for review"]
+    C -->|"no"| U["Union clusters"]
+    U --> E["Canonical entities + match edges"]
 </pre>
 
-1. **Extract mentions** — Pull entity mentions from each source with context (surrounding text, metadata, co-occurring entities).
-2. **Blocking** — Create candidate pairs using cheap heuristics (same first letter, shared token, locality-sensitive hashing) to avoid O(n^2) comparisons.
-3. **Pairwise scoring** — Score candidate pairs using string similarity (Jaro-Winkler, edit distance), embedding cosine similarity, or an LLM-based judge.
-4. **Build resolution graph** — Create a graph where nodes are mentions and edges are scored similarities above a threshold.
-5. **Community detection** — Run connected components, Louvain clustering, or label propagation to identify clusters of mentions that refer to the same entity.
-6. **Merge** — For each cluster, select or synthesize a canonical entity record that combines the best attributes from all mentions.
+1. **Normalize** names: lowercase, strip punctuation, remove legal suffixes, expand "&".
+2. **Block** to avoid comparing every pair: only records sharing a meaningful token (or an LSH bucket) are candidates.
+3. **Score** pairs from name similarity plus agreeing attributes (email domain, city). A matching strong identifier such as a tax ID is decisive.
+4. **Merge in order of strength,** and refuse any merge that would put two records with *different* strong identifiers in the same cluster. This one rule prevents chaining.
+5. **Keep the edges and the rejections.** Edges explain why records were merged. Rejections are the review queue.
 
 ## When to Use It
 
-- You are building a knowledge graph from multiple data sources and need deduplicated entities.
-- Your RAG system retrieves fragmented and contradictory information about the same entity from different documents.
-- Analytics or reporting requires accurate entity counts across heterogeneous sources.
-- You have long-tail entities (niche products, internal tools, domain-specific terms) that embedding models have not seen.
+- You're building a knowledge graph or entity-centric RAG from more than one source.
+- The same people, companies or products appear under different names and IDs.
+- Wrong merges are costly: customer data, compliance, financial reporting.
 
-## When not to Use It
+## When NOT to Use It
 
-- Entities have reliable unique identifiers across all sources (UUIDs, standardized codes). Simple join-on-ID is cheaper and more accurate.
-- The entity space is small and manually curated. A lookup table or alias mapping is simpler and more maintainable.
-- Real-time resolution is required. Graph-based approaches are batch-oriented. For real-time, use embedding-based nearest neighbor lookup.
+- **A shared ID already exists.** If every system carries the same customer ID, join on it.
+- **One clean source.** Resolution solves cross-source mess. Within one well-run system it's mostly unnecessary.
 
 ## Trade-offs
 
-1. **Blocking quality** — The blocking strategy determines recall. Aggressive blocking (more pairs) catches more matches but costs more compute. Conservative blocking misses matches.
-2. **Threshold sensitivity** — The similarity threshold for creating graph edges controls precision/recall. Too low creates false links; too high misses valid ones.
-3. **Transitive errors** — Graph-based approaches propagate errors: one bad edge can merge two unrelated entity clusters.
-4. **Maintenance cost** — New data sources require re-running or incrementally updating the resolution pipeline.
+- **Precision against recall.** A lower threshold merges more true duplicates and more false ones. False merges usually hurt more, so lean conservative and send uncertain pairs to review.
+- **Blocking misses pairs.** Records with no shared token ("IBM" and "International Business Machines") are never compared. Add alias tables or embedding-based blocking for known abbreviations.
+- **Clusters need maintenance.** New records arrive daily. Incremental resolution is cheaper, but periodic full re-runs catch drift.
 
 ## Failure Modes
 
-### Transitive Merge Cascade
-**Trigger**: A single incorrect edge links two unrelated entity clusters, and community detection merges them into one super-cluster.
-**Symptom**: Hundreds of unrelated entities share a canonical record. Downstream queries get nonsensical answers because the "entity" now represents multiple real-world things.
-**Mitigation**: Set a maximum cluster size threshold. Flag clusters that grow beyond expected bounds for manual review. Use edge confidence scores and remove low-confidence edges before community detection.
+**Transitive chaining.** A vague record ("Apex", no other attributes) bridges two distinct entities. Conflict-aware merging blocks it, and the example tests exactly this case.
 
-### Blocking Function Misses Cross-Script Entities
-**Trigger**: The blocking function uses first-N characters or phonetic hashing, but entity mentions span multiple scripts or languages ("München" vs. "Munich").
-**Symptom**: Valid matches are never generated as candidate pairs because they fall into different blocks. Recall drops silently for multilingual corpora.
-**Mitigation**: Use embedding-based blocking that captures semantic similarity across languages. Add transliteration normalization before blocking.
+**Over-trusting the LLM as matcher.** LLM pairwise judgments are good at hard cases ("is 'Big Blue' IBM?") and expensive at scale, and they're inconsistent on borderline pairs. Use rules and scores for most pairs and the LLM for the uncertain middle band.
 
-### Stale Canonical After New Source Ingestion
-**Trigger**: A new data source provides better-quality entity data than the original canonical, but the pipeline always preserves the first-seen canonical.
-**Symptom**: Canonical records remain low-quality even though superior data exists in the cluster. Retrieval surfaces the weaker representation.
-**Mitigation**: Re-evaluate canonical selection when new sources are added, using a quality scoring function (completeness, recency, source authority). Allow canonical promotion.
+**No review loop.** Rejected merges and low-confidence edges pile up unread. Someone must own the queue, or the conservative threshold quietly becomes a recall problem.
 
 ## Implementation Example
 
+Normalization, token blocking, attribute-aware scoring, strongest-first merging with a conflict check on strong identifiers, and a log of rejected merges. The tests include the chaining case and a same-name, different-tax-ID pair.
+
+```bash
+cd examples && pytest graph_patterns/test_entity_resolution_graph.py
+```
+
+<!-- example: examples/graph_patterns/entity_resolution_graph.py -->
 ```python
+"""Entity Resolution Graph.
+
+Decide which records from different sources are the same real-world entity.
+Records are nodes; an edge means "probably the same". Clusters are connected
+components, with one safeguard that plain connected components lacks: a
+cluster is never allowed to contain two records with *conflicting* strong
+identifiers (different emails, different tax IDs). That stops one fuzzy edge
+from chaining two different companies together.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import defaultdict
 from dataclasses import dataclass, field
+
+SUFFIXES = re.compile(r"\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|gmbh|plc)\b\.?", re.I)
 
 
 @dataclass
-class EntityMention:
-    mention_id: str
+class Record:
+    id: str
     source: str
     name: str
-    context: str = ""
-    attributes: dict = field(default_factory=dict)
+    email_domain: str | None = None
+    tax_id: str | None = None
+    city: str | None = None
 
 
-def jaro_winkler_similarity(s1: str, s2: str) -> float:
-    if s1 == s2:
+def normalize(name: str) -> str:
+    name = SUFFIXES.sub("", name.lower().replace("&", " and "))
+    return re.sub(r"[^a-z0-9 ]", "", re.sub(r"\s+", " ", name)).strip()
+
+
+def tokens(name: str) -> set[str]:
+    return set(normalize(name).split())
+
+
+def score(a: Record, b: Record) -> float:
+    """0-1 match score from name overlap plus agreeing attributes."""
+    ta, tb = tokens(a.name), tokens(b.name)
+    name = len(ta & tb) / len(ta | tb) if ta | tb else 0.0
+    bonus = 0.0
+    if a.email_domain and a.email_domain == b.email_domain:
+        bonus += 0.4
+    if a.city and a.city == b.city:
+        bonus += 0.1
+    if a.tax_id and a.tax_id == b.tax_id:
         return 1.0
-    len1, len2 = len(s1), len(s2)
-    if len1 == 0 or len2 == 0:
-        return 0.0
-    match_distance = max(len1, len2) // 2 - 1
-    s1_matches = [False] * len1
-    s2_matches = [False] * len2
-    matches = 0
-    transpositions = 0
+    return min(1.0, name * 0.7 + bonus)
 
-    for i in range(len1):
-        start = max(0, i - match_distance)
-        end = min(i + match_distance + 1, len2)
-        for j in range(start, end):
-            if s2_matches[j] or s1[i] != s2[j]:
-                continue
-            s1_matches[i] = True
-            s2_matches[j] = True
-            matches += 1
-            break
 
-    if matches == 0:
-        return 0.0
+def _conflict(a: Record, b: Record) -> bool:
+    return bool(
+        (a.tax_id and b.tax_id and a.tax_id != b.tax_id)
+        or (a.email_domain and b.email_domain and a.email_domain != b.email_domain)
+    )
 
-    k = 0
-    for i in range(len1):
-        if not s1_matches[i]:
+
+def blocks(records: list[Record]) -> dict[str, list[Record]]:
+    """Only compare records sharing a name token, so cost isn't O(n²) over everything."""
+    out: dict[str, list[Record]] = defaultdict(list)
+    for r in records:
+        for t in tokens(r.name):
+            if len(t) > 2:
+                out[t].append(r)
+    return out
+
+
+@dataclass
+class Resolution:
+    clusters: list[list[Record]]
+    edges: list[tuple[str, str, float]] = field(default_factory=list)
+    rejected: list[tuple[str, str, str]] = field(default_factory=list)  # merges blocked by conflicts
+
+
+def resolve(records: list[Record], threshold: float = 0.6) -> Resolution:
+    by_id = {r.id: r for r in records}
+    candidate_pairs = set()
+    for group in blocks(records).values():
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                candidate_pairs.add(tuple(sorted((a.id, b.id))))
+
+    scored = sorted(
+        ((score(by_id[a], by_id[b]), a, b) for a, b in candidate_pairs), reverse=True
+    )  # strongest evidence merges first
+    cluster_of = {r.id: {r.id} for r in records}
+    result = Resolution([])
+    for s, a, b in scored:
+        if s < threshold or cluster_of[a] is cluster_of[b]:
             continue
-        while not s2_matches[k]:
-            k += 1
-        if s1[i] != s2[k]:
-            transpositions += 1
-        k += 1
+        ca, cb = cluster_of[a], cluster_of[b]
+        clash = next(((x, y) for x in ca for y in cb if _conflict(by_id[x], by_id[y])), None)
+        if clash:
+            result.rejected.append((a, b, f"conflicting identifiers between {clash[0]} and {clash[1]}"))
+            continue
+        merged = ca | cb
+        for rid in merged:
+            cluster_of[rid] = merged
+        result.edges.append((a, b, round(s, 2)))
 
-    jaro = (
-        matches / len1 + matches / len2 + (matches - transpositions / 2) / matches
-    ) / 3
-    prefix_len = 0
-    for i in range(min(4, min(len1, len2))):
-        if s1[i] == s2[i]:
-            prefix_len += 1
-        else:
-            break
-
-    return jaro + prefix_len * 0.1 * (1 - jaro)
-
-
-class ResolutionGraph:
-    def __init__(self, threshold: float = 0.85):
-        self._mentions: dict[str, EntityMention] = {}
-        self._edges: dict[str, list[tuple[str, float]]] = {}
-        self._threshold = threshold
-
-    def add_mention(self, mention: EntityMention) -> None:
-        self._mentions[mention.mention_id] = mention
-        self._edges[mention.mention_id] = []
-
-    def compute_similarities(self) -> None:
-        mention_ids = list(self._mentions.keys())
-        for i in range(len(mention_ids)):
-            for j in range(i + 1, len(mention_ids)):
-                m1 = self._mentions[mention_ids[i]]
-                m2 = self._mentions[mention_ids[j]]
-                sim = jaro_winkler_similarity(m1.name.lower(), m2.name.lower())
-                if sim >= self._threshold:
-                    self._edges[mention_ids[i]].append((mention_ids[j], sim))
-                    self._edges[mention_ids[j]].append((mention_ids[i], sim))
-
-    def find_clusters(self) -> list[set[str]]:
-        visited: set[str] = set()
-        clusters: list[set[str]] = []
-        for mention_id in self._mentions:
-            if mention_id in visited:
-                continue
-            cluster: set[str] = set()
-            queue = [mention_id]
-            while queue:
-                current = queue.pop(0)
-                if current in visited:
-                    continue
-                visited.add(current)
-                cluster.add(current)
-                for neighbor_id, _ in self._edges.get(current, []):
-                    if neighbor_id not in visited:
-                        queue.append(neighbor_id)
-            clusters.append(cluster)
-        return clusters
-
-    def resolve(self) -> list[dict]:
-        self.compute_similarities()
-        clusters = self.find_clusters()
-        resolved = []
-        for cluster in clusters:
-            mentions = [self._mentions[mid] for mid in cluster]
-            canonical = max(mentions, key=lambda m: len(m.name))
-            resolved.append({
-                "canonical_name": canonical.name,
-                "sources": list({m.source for m in mentions}),
-                "mention_count": len(mentions),
-                "all_names": list({m.name for m in mentions}),
-            })
-        return resolved
+    unique = {id(c): c for c in cluster_of.values()}.values()
+    result.clusters = [sorted((by_id[i] for i in c), key=lambda r: r.id) for c in unique]
+    return result
 ```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| Dedupe | Open-source Python | Active learning based entity resolution with blocking |
-| Senzing | Commercial | Real-time entity resolution engine with graph-based approach |
-| Neo4j + GDS | Graph DB + library | Community detection algorithms (Louvain, WCC) on entity graphs |
-| Splink | Open-source (UK Gov) | Probabilistic record linkage at scale with Spark support |
-| LLM-based judge | Custom | Use LLM to score whether two mentions refer to the same entity |
+| Tool | Notes |
+|---|---|
+| Splink | Probabilistic record linkage (Fellegi–Sunter) at scale on Spark/DuckDB |
+| dedupe | Active-learning entity resolution in Python |
+| Zingg | Open-source ML entity resolution on Spark |
+| Senzing | Commercial entity resolution engine |
 
 ## Related Patterns
 
-- **[GraphRAG](/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/)** — A clean entity-resolved knowledge graph is the foundation for effective GraphRAG.
-- **[Data Contract Pattern](/AI-Engineering-Patterns/patterns/data-patterns/data-contract/)** — Data contracts can enforce entity ID standards that reduce the need for resolution.
+- [GraphRAG](graph-rag.md) depends on resolved entities for traversal to work.
+- [Semantic Deduplication](../data-patterns/semantic-deduplication.md) deduplicates *documents*. This pattern deduplicates *entities*.
+- [Data Contract](../data-patterns/data-contract.md) can require sources to provide the strong identifiers that make resolution reliable.
 
 ## Further Reading
 
-- [A Survey of Entity Resolution and Entity Matching](https://arxiv.org/abs/2312.10714)
-- [Dedupe Library Documentation](https://docs.dedupe.io/)
-- [Splink: Probabilistic Record Linkage at Scale](https://moj-analytical-services.github.io/splink/)
+- [Splink documentation](https://moj-analytical-services.github.io/splink/)
+- [dedupe documentation](https://docs.dedupe.io/)
+- *Data Matching*, Peter Christen (Springer, 2012). The standard reference on record linkage.

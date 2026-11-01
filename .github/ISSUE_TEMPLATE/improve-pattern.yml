@@ -1,0 +1,25 @@
+name: Improve a pattern
+description: Something is wrong, missing or out of date
+labels: ["improvement"]
+body:
+  - type: input
+    id: pattern
+    attributes:
+      label: Pattern
+      placeholder: e.g. Semantic Caching
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options: [Factual error, Broken or dubious link, Missing failure mode, Example code bug, Outdated tool landscape, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Include sources where you can.
+    validations:
+      required: true

@@ -16,4 +16,68 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html {
+  scroll-padding-top: 5rem; /* anchor links land below the sticky navbar */
+}
 
+/* Highlighted code blocks (rehype-pretty-code) */
+figure[data-rehype-pretty-code-figure] {
+  position: relative;
+  margin: 1.5em 0;
+}
+
+figure[data-rehype-pretty-code-figure] pre {
+  margin: 0;
+  padding: 1rem 0;
+  background: #0d1117;
+  border: 1px solid #1f2937;
+  border-radius: 0.6rem;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+figure[data-rehype-pretty-code-figure] code {
+  background: transparent !important;
+  padding: 0 !important;
+  font-weight: 400 !important;
+}
+
+figure[data-rehype-pretty-code-figure] [data-line] {
+  padding: 0 1.1rem;
+}
+
+figure[data-rehype-pretty-code-figure] pre[data-language]::before {
+  content: attr(data-language);
+  position: absolute;
+  top: 0.45rem;
+  right: 4.2rem;
+  font-size: 0.7rem;
+  color: #6b7280;
+  font-family: var(--font-geist-mono);
+}
+
+.code-copy {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.5rem;
+  font-size: 0.72rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 0.35rem;
+  color: #9ca3af;
+  background: #111827;
+  border: 1px solid #374151;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+figure[data-rehype-pretty-code-figure]:hover .code-copy,
+.code-copy:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .code-copy {
+    opacity: 1;
+  }
+}

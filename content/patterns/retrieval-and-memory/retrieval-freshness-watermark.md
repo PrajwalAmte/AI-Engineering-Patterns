@@ -5,211 +5,172 @@ status: emerging
 tags: [retrieval, rag, freshness, metadata, temporal]
 related:
   - Hybrid Search
-  - Data Contract Pattern
+  - Data Contract
   - Semantic Caching
-  - GraphRAG
+  - Grounding Verifier
+example: examples/retrieval_and_memory/retrieval_freshness_watermark.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-04"
-description: Attach temporal metadata to every retrieved chunk and surface it to the LLM so it can reason about staleness and prefer fresh evidence.
+last_updated: "2026-11"
+description: Store when each chunk's content became true, drop superseded versions, and show the model how old each source is so it can say so.
 sidebar:
   order: 2
 ---
 
 ## What It Is
 
-Retrieval freshness watermarking attaches structured temporal metadata — creation date, last verified date, and a computed freshness score — to every chunk in the retrieval index. At query time, the freshness watermark is surfaced alongside the retrieved content, enabling the LLM to weight recent evidence over stale evidence and explicitly flag when its answer is based on potentially outdated information.
+Every chunk in the index carries an *effective date*: when its content became true, not when it was crawled. At query time, three things happen. Older versions of a document are dropped when a newer one was retrieved. Age is blended into the ranking for questions about the present. And each chunk goes into the prompt with an "as of" line, so the model can say "as of March, the price was…" instead of stating an old fact as current.
+
+"Watermark" is our name for this metadata, not an industry term. The underlying ideas (temporal metadata, recency boosting, version de-duplication) are common practice in search.
 
 ## The Problem It Solves
 
-Standard RAG retrieves chunks by semantic similarity alone. A chunk from 2022 and a chunk from yesterday score identically if they are equally similar to the query. This creates several failure modes:
+Embedding similarity has no notion of time. The pricing page from 2024 and the one from last week are almost the same text, so they score almost the same, and the older one sometimes wins. The model then states the old price confidently, because nothing in the prompt says it might be out of date.
 
-- **Stale answers presented as current**: A user asks "What is the current pricing for Product X?" The retriever returns a pricing page from 18 months ago because it is the most semantically similar. The LLM generates a confident, wrong answer with no indication of staleness.
-- **Contradictory evidence without temporal resolution**: Two chunks contradict each other — an old policy and an updated policy. The LLM has no basis to prefer one over the other and may hallucinate a compromise or pick arbitrarily.
-- **Compliance documentation drift**: A regulatory FAQ was accurate when indexed but the regulation has since been updated. The system continues serving outdated compliance guidance.
-- **No way to express "I don't have recent information"**: Without freshness metadata, the LLM cannot distinguish between "the answer is based on information from last week" and "the answer is based on information from two years ago." It cannot qualify its confidence.
-
-The core issue: semantic similarity measures relevance but not recency. For many queries, recency is a critical dimension of relevance that vector distance cannot capture.
+It gets worse when both versions are retrieved. The model sees "refunds within 30 days" and "refunds within 14 days" with nothing to choose between them, and either picks one or blends them into something neither page says.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart TD
-    A["Document ingestion"] --> B["Extract/assign temporal metadata"]
-    B --> C["Compute freshness score"]
-    C --> D["Store chunk + watermark in index"]
-    E["User query"] --> F["Retrieve top-k by similarity"]
-    F --> G["Attach freshness watermark to each chunk"]
-    G --> H["Optionally re-rank by freshness-weighted score"]
-    H --> I["Build prompt with watermarked context"]
-    I --> J["LLM generates answer with freshness awareness"]
+    I["Ingestion"] --> M["Extract effective date<br/>(not crawl time)"]
+    M --> X["Index chunk + doc_key + effective date + content type"]
+    Q["Query + retrieved candidates"] --> V["Drop revoked chunks;<br/>keep newest version per doc_key"]
+    V --> T{"Time-sensitive query?"}
+    T -->|"yes"| W["Blend: α·similarity + (1−α)·freshness"]
+    T -->|"no"| N["Mostly similarity"]
+    W & N --> P["Prompt: [n] (as of DATE, N days old) text"]
 </pre>
 
-1. **Metadata extraction at ingestion**: When a document is indexed, extract or assign temporal metadata — document creation date, last modified date, explicit "effective as of" dates found in the text, and the indexing timestamp.
-2. **Freshness score computation**: Compute a freshness score (0.0 to 1.0) based on a decay function. Recent documents score near 1.0; older documents decay toward 0.0. The decay rate is configurable per content type (news decays fast, policy documents decay slowly).
-3. **Watermark storage**: Store the freshness watermark (dates + score) alongside the chunk embedding in the vector index as metadata.
-4. **Freshness-aware retrieval**: At query time, after retrieving the top-k chunks by similarity, attach the freshness watermark to each chunk. Optionally apply a combined score: `final_score = alpha * similarity + (1 - alpha) * freshness`.
-5. **Prompt integration**: Format the watermark into the prompt context so the LLM can see when each piece of evidence was last known to be accurate. Include a system instruction to prefer recent sources when evidence conflicts and to disclose when answers rely on older sources.
+1. **At ingestion, record the effective date.** Use an "effective as of" date or the publication date from the content itself. Fall back to last-modified. Crawl time is a last resort, and those chunks should be flagged.
+2. **Give every logical document a stable `doc_key`** so its versions can be recognized as the same document.
+3. **At query time, keep only the newest version of each document,** and never serve chunks that were explicitly revoked.
+4. **Blend freshness into the score only when the query is about the present** ("current", "latest", prices). Freshness decays per content type: news goes stale in weeks, pricing in months, policies in years. A floor keeps old but still valid content in the running.
+5. **Show the dates to the model** and tell it to prefer newer sources and to say when its newest source is old.
 
 ## When to Use It
 
-- Your corpus contains time-sensitive information (pricing, policy, regulations, product specs) that is updated periodically.
-- Users ask questions where recency matters ("current", "latest", "as of today") and expect answers to reflect recent state.
-- Your index contains historical versions of documents alongside current ones, and the retriever cannot distinguish them by similarity alone.
-- You need the LLM to explicitly qualify its answers with temporal confidence ("Based on information from March 2026...").
+- The corpus has content that changes: pricing, policies, product specs, regulations, org charts.
+- Old versions stay in the index (wikis, document stores, ticket history).
+- Users ask "current", "latest" or "now" questions and act on the answers.
 
-## When not to Use It
+## When NOT to Use It
 
-- Your corpus is static reference material where freshness is irrelevant (mathematical proofs, historical records, literary analysis). Adding freshness scoring adds complexity without benefit.
-- All documents in the index are current-state-only — old versions are removed when new ones are indexed. There is no staleness problem to solve.
-- Your retrieval pipeline already filters by date range before similarity search. If temporal filtering is handled at the query level, chunk-level watermarking is redundant.
-- The LLM is not used for factual/temporal queries. If the use case is creative writing, code generation, or brainstorming, freshness metadata does not improve output quality.
+- **Static reference material.** Proofs, historical records and textbooks don't decay.
+- **The index only ever holds the current version,** because ingestion deletes on update. Then the problem doesn't exist. (This is also a good fix, if you can manage it.)
+- **You already filter by date** in the retrieval query. You still need the "as of" lines in the prompt, but you can skip the rest.
 
 ## Trade-offs
 
-1. **Metadata accuracy** — The freshness watermark is only as good as the temporal metadata. Documents without clear dates, pages with mixed-date content, or scraped content with ambiguous timestamps produce unreliable freshness scores.
-2. **Relevance-freshness tension** — Boosting freshness can push semantically superior but older chunks out of the context window. The `alpha` weight requires tuning per use case and may need to vary by query type.
-3. **Decay function design** — A linear decay treats all content the same. In practice, some content types expire in days (news) while others remain valid for years (architecture docs). Per-type decay functions add configuration complexity.
-4. **Index schema complexity** — Adding structured metadata to every chunk increases storage and requires metadata-aware indexing. Not all vector databases support efficient metadata filtering and scoring.
+- **Dates are messy.** Many documents have no reliable date, or contain several. A wrong date is worse than none, because it gives false confidence.
+- **Freshness can push out the best answer.** Boost recency too much and a newer, less relevant chunk wins. That's why the blend only applies to time-sensitive queries, and why the example's α still weights similarity most.
+- **More configuration.** Half-lives per content type are judgment calls that someone has to own.
 
 ## Failure Modes
 
-### Missing or Incorrect Source Timestamps
-**Trigger**: Source documents lack reliable timestamps, or the ingestion pipeline assigns the ingestion time instead of the content creation time.
-**Symptom**: Freshness scores are meaningless — a newly ingested but years-old document gets a high freshness score. The system confidently serves outdated information.
-**Mitigation**: Extract and validate content dates from multiple signals (document metadata, publication date, last-modified header). Flag chunks with missing or suspicious timestamps for manual review.
+**Crawl date mistaken for content date.** A 2019 PDF is ingested today and treated as brand new. Validate dates at ingestion: a content date years older than the crawl date is normal, but no content date at all should be flagged.
 
-### Alpha Weight Mismatch Across Query Types
-**Trigger**: A single freshness weight (`alpha`) is applied globally, but some queries are time-sensitive ("current pricing") and others are not ("how does TLS work").
-**Symptom**: Time-insensitive queries get penalized for using older but perfectly valid content. Time-sensitive queries do not get enough freshness boost.
-**Mitigation**: Classify queries by temporal sensitivity (keyword heuristics or a lightweight classifier) and apply different alpha weights per class. Default to low freshness weight for ambiguous queries.
+**One recency weight for every query.** "How does TLS work" gets penalized for citing a good 2019 explainer, and "current price of Pro" doesn't get enough boost. Detect time-sensitive queries, even with a regex, and only boost those.
 
-### Decay Function Cliff
-**Trigger**: Exponential decay function drops freshness scores to near-zero after the half-life, even for content that is still valid.
-**Symptom**: Perfectly good content disappears from retrieval results purely due to age. The system has less context to work with, and response quality drops.
-**Mitigation**: Use a decay floor (minimum freshness score) so that old but unrevoked content still participates in ranking. Separate "expired" (actively invalid) from "old" (still valid, just not fresh).
+**Decay cliff.** An exponential decay with no floor sends a three-year-old but still valid policy to zero, and it disappears. Keep "old" (still valid, ranks lower) separate from "revoked" (never served).
 
 ## Implementation Example
 
-```python
-import math
-import time
-from dataclasses import dataclass
+Version de-duplication, revocation, per-type decay with a floor, a query-sensitive blend, and the "as of" prompt format. The tests include the case that motivated the pattern: an outdated price that is *more* similar to the query than the current one.
 
-
-@dataclass
-class FreshnessWatermark:
-    created_at: float
-    last_verified_at: float
-    freshness_score: float
-    source_label: str
-
-
-@dataclass
-class WatermarkedChunk:
-    content: str
-    similarity_score: float
-    watermark: FreshnessWatermark
-    combined_score: float
-
-
-class FreshnessScorer:
-    def __init__(
-        self,
-        half_life_days: float = 90.0,
-        min_score: float = 0.1,
-    ):
-        self._half_life_seconds = half_life_days * 86400
-        self._min_score = min_score
-
-    def score(self, last_verified_at: float, now: float | None = None) -> float:
-        now = now or time.time()
-        age = max(now - last_verified_at, 0)
-        decay = math.exp(-0.693 * age / self._half_life_seconds)
-        return max(decay, self._min_score)
-
-
-def watermark_chunk(
-    content: str,
-    created_at: float,
-    last_verified_at: float,
-    source_label: str,
-    scorer: FreshnessScorer,
-) -> FreshnessWatermark:
-    return FreshnessWatermark(
-        created_at=created_at,
-        last_verified_at=last_verified_at,
-        freshness_score=scorer.score(last_verified_at),
-        source_label=source_label,
-    )
-
-
-def freshness_rerank(
-    chunks: list[tuple[str, float, FreshnessWatermark]],
-    alpha: float = 0.7,
-) -> list[WatermarkedChunk]:
-    results = []
-    for content, sim_score, watermark in chunks:
-        combined = alpha * sim_score + (1 - alpha) * watermark.freshness_score
-        results.append(
-            WatermarkedChunk(
-                content=content,
-                similarity_score=sim_score,
-                watermark=watermark,
-                combined_score=combined,
-            )
-        )
-    results.sort(key=lambda c: c.combined_score, reverse=True)
-    return results
-
-
-def build_watermarked_prompt(
-    query: str,
-    ranked_chunks: list[WatermarkedChunk],
-    max_chunks: int = 5,
-) -> str:
-    context_parts = []
-    for chunk in ranked_chunks[:max_chunks]:
-        verified_date = time.strftime(
-            "%Y-%m-%d", time.gmtime(chunk.watermark.last_verified_at)
-        )
-        context_parts.append(
-            f"[Source: {chunk.watermark.source_label} | "
-            f"Last verified: {verified_date} | "
-            f"Freshness: {chunk.watermark.freshness_score:.2f}]\n"
-            f"{chunk.content}"
-        )
-    context_block = "\n\n---\n\n".join(context_parts)
-
-    return (
-        "Answer the following question using the provided context. "
-        "Each source includes a freshness score and verification date. "
-        "When sources conflict, prefer more recent sources. "
-        "If your answer relies on information older than 6 months, "
-        "explicitly note this.\n\n"
-        f"Context:\n{context_block}\n\n"
-        f"Question: {query}"
-    )
+```bash
+cd examples && pytest retrieval_and_memory/test_retrieval_freshness_watermark.py
 ```
+
+<!-- example: examples/retrieval_and_memory/retrieval_freshness_watermark.py -->
+```python
+"""Retrieval Freshness Watermark.
+
+Every chunk carries the date its content was effective, not the date it was
+indexed. At query time: superseded versions are dropped, freshness is blended
+into the score only for time-sensitive queries, and each chunk goes into the
+prompt with an "as of" line so the model can say how current its answer is.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from datetime import date
+
+# How long until a chunk is "half as fresh", by content type. These are
+# starting points to argue about, not constants of nature.
+HALF_LIFE_DAYS = {"pricing": 90, "news": 14, "policy": 365, "reference": 3650}
+FRESHNESS_FLOOR = 0.2  # old-but-unrevoked content still competes
+TIME_SENSITIVE = re.compile(r"\b(current|currently|latest|now|today|this (week|month|year)|price|pricing|cost)\b", re.I)
+
+
+@dataclass
+class Chunk:
+    doc_key: str  # stable id of the logical document, shared across versions
+    text: str
+    effective: date  # when this content became true, NOT when it was indexed
+    content_type: str = "reference"
+    expired: bool = False  # explicitly revoked: never served
+
+
+def freshness(chunk: Chunk, today: date) -> float:
+    age = max((today - chunk.effective).days, 0)
+    half_life = HALF_LIFE_DAYS.get(chunk.content_type, 365)
+    return max(FRESHNESS_FLOOR, 0.5 ** (age / half_life))
+
+
+def rank(
+    query: str,
+    candidates: list[tuple[Chunk, float]],  # (chunk, similarity) from your retriever
+    today: date,
+    k: int = 4,
+) -> list[tuple[Chunk, float]]:
+    # 1. Revoked content is gone; of several versions of one document, keep the newest.
+    newest: dict[str, tuple[Chunk, float]] = {}
+    for chunk, sim in candidates:
+        if chunk.expired:
+            continue
+        held = newest.get(chunk.doc_key)
+        if held is None or chunk.effective > held[0].effective:
+            newest[chunk.doc_key] = (chunk, sim)
+
+    # 2. Only let age move the ranking when the question is about the present.
+    alpha = 0.6 if TIME_SENSITIVE.search(query) else 0.95
+    scored = [(c, alpha * sim + (1 - alpha) * freshness(c, today)) for c, sim in newest.values()]
+    return sorted(scored, key=lambda pair: -pair[1])[:k]
+
+
+def build_context(ranked: list[tuple[Chunk, float]], today: date) -> str:
+    lines = [
+        f"Today is {today.isoformat()}. Each source shows the date it was effective.",
+        "If sources conflict, prefer the more recent one. If the newest relevant source is old,",
+        "say how old it is instead of presenting it as current.",
+        "",
+    ]
+    for i, (chunk, _) in enumerate(ranked, start=1):
+        age = (today - chunk.effective).days
+        lines.append(f"[{i}] (as of {chunk.effective.isoformat()}, {age} days old) {chunk.text}")
+    return "\n".join(lines)
+```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| Weaviate | Vector database | Native metadata filtering and scoring in hybrid search |
-| Qdrant | Vector database | Payload-based filtering supports temporal metadata at query time |
-| Pinecone | Managed vector DB | Metadata filtering on timestamp fields with namespace-level TTL |
-| LlamaIndex | Framework | Custom node postprocessors can inject freshness scoring into retrieval |
-| Vespa | Search platform | First-class support for combining relevance and freshness in ranking profiles |
+| Tool | Notes |
+|---|---|
+| Vespa | Freshness and recency as first-class ranking features |
+| Elasticsearch / OpenSearch | `function_score` with date decay functions (gauss, exp, linear) |
+| Weaviate, Qdrant, Pinecone | Metadata filters on date fields; blend scores in your own code |
+| LlamaIndex | Recency postprocessors over node metadata |
 
 ## Related Patterns
 
-- **[Hybrid Search](/AI-Engineering-Patterns/patterns/retrieval-and-memory/hybrid-search/)** — Freshness watermarking adds a third signal (temporal) to the semantic + keyword retrieval fusion.
-- **[Data Contract Pattern](/AI-Engineering-Patterns/patterns/data-patterns/data-contract/)** — Data contracts can specify freshness SLAs that the watermarking system enforces.
-- **[Semantic Caching](/AI-Engineering-Patterns/patterns/inference-and-serving/semantic-caching/)** — Cache TTLs should align with the freshness decay rates of the underlying content.
-- **[GraphRAG](/AI-Engineering-Patterns/patterns/graph-patterns/graph-rag/)** — Entity relationships in the knowledge graph can carry temporal edges, enabling freshness-aware graph traversal.
+- [Hybrid Search](hybrid-search.md) produces the candidates this pattern re-ranks.
+- [Data Contract](../data-patterns/data-contract.md) is where you require ingestion sources to provide a reliable effective date.
+- [Semantic Caching](../inference-and-serving/semantic-caching.md) has the same staleness problem one layer up. Align cache TTLs with content half-lives.
+- [Grounding Verifier](grounding-verifier.md) confirms an answer matches its sources. This pattern makes sure those sources are current.
 
 ## Further Reading
 
-- [Temporal Information Retrieval — Survey Paper](https://arxiv.org/abs/2404.16130)
-- [Time-Aware RAG: Handling Temporal Queries in Retrieval-Augmented Generation](https://blog.llamaindex.ai/time-aware-rag/)
-- [Weaviate Metadata Filtering Documentation](https://weaviate.io/developers/weaviate/search/filters)
+- [Elasticsearch function_score decay functions](https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-function-score-query.html#function-decay)
+- [Vespa ranking with freshness](https://docs.vespa.ai/en/reference/rank-features.html#freshness)

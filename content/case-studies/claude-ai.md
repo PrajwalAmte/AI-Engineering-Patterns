@@ -13,7 +13,7 @@ sidebar:
   order: 2
 ---
 
-> *This analysis is based on public engineering blog posts, conference talks, patent filings, and observable system behaviour. It is not official documentation from the company.*
+> *Built from the public sources listed under References, mainly Anthropic's own engineering write-up. Figures are quoted from those sources. The "Inferred Implementation Details" section is our reading, not confirmed by Anthropic. This is not official documentation.*
 
 ## System Context
 
@@ -45,7 +45,7 @@ Without deliberate architecture choices, a naive multi-agent research pipeline f
 | Human-in-the-Loop | Agents pause and request confirmation before consequential, irreversible actions; Anthropic's safety framework mandates this at the infrastructure level |
 | Span-Level Tracing | Every research run emits spans covering agent interactions, tool calls, and compaction events for debugging and optimization |
 
-```mermaid
+<pre class="mermaid">
 flowchart TD
     U([User Query]) --> LR[LeadResearcher<br/>Claude Opus 4]
     LR --> PL[Plan + Write<br/>to Memory Store]
@@ -74,7 +74,7 @@ flowchart TD
     MORE -->|Yes| ES
     MORE -->|No| CA[CitationAgent]
     CA --> FIN([Final Answer<br/>+ Inline Citations])
-```
+</pre>
 
 ## Architecture Walkthrough
 
@@ -106,7 +106,7 @@ Claude's agent architecture encodes a layered trust model that distinguishes thr
 
 MCP servers implement this at the tool level: each server exposes a scoped set of capabilities, and the host application mediates which tools are presented to the model. This scoping is a deliberate security surface — preventing a compromised MCP tool from accessing resources beyond its declared scope.
 
-```mermaid
+<pre class="mermaid">
 sequenceDiagram
     participant U as User
     participant LR as LeadResearcher (Opus 4)
@@ -139,7 +139,7 @@ sequenceDiagram
         HITL->>MCP: Execute action
     end
     LR-->>U: Final cited answer
-```
+</pre>
 
 ## Pattern Interaction Notes
 

@@ -2,222 +2,159 @@
 title: Cascading Context Assembly
 pillar: cost-and-efficiency
 status: emerging
-tags: [cost, context-window, retrieval, latency, efficiency]
+tags: [cost, context-window, retrieval, latency]
 related:
-  - Token Budget Pattern
-  - Model Router Pattern
-  - Hybrid Search
-  - Semantic Caching
+  - Token Budget
+  - Model Router
+  - Retrieval Quality Gate
+  - Uncertainty-Triggered Retry
+example: examples/cost_and_efficiency/cascading_context_assembly.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-04"
-description: Start with minimal context and progressively enrich only when the model signals low confidence, avoiding maximum context stuffing on every request.
+last_updated: "2026-11"
+description: Answer with a little context first, and retrieve more only when the model says, with an exact sentinel, that it can't answer from what it has.
 sidebar:
   order: 2
 ---
 
 ## What It Is
 
-Cascading context assembly is a multi-tier retrieval and prompting strategy that starts with the cheapest, smallest context and only escalates to richer context when the model's initial response signals low confidence or insufficient information. Instead of stuffing every request with maximum context, it builds context progressively — spending retrieval cost and context window tokens only when needed.
+Instead of filling every prompt with the maximum retrieved context, start small. Give the model the top one or two chunks and an instruction: if the answer isn't in this context, reply with exactly `INSUFFICIENT_CONTEXT`. If it does, retrieve more (and optionally switch to a stronger model) and try again. Stop at the first tier that answers.
+
+It's the [Model Router](../inference-and-serving/model-router.md) idea applied to context size instead of model size, and related to adaptive-retrieval research such as Adaptive-RAG and Self-RAG.
 
 ## The Problem It Solves
 
-The default RAG architecture retrieves a fixed number of chunks for every query and stuffs them all into the prompt. This "max context by default" approach has compounding costs:
+"Retrieve 20 chunks, just to be safe" is expensive in two ways. Every request pays for 20 chunks of input tokens, even "what are your opening hours?", which the first chunk answers. And more context isn't neutral: irrelevant chunks dilute attention, so answers to easy questions can get *worse* with more context.
 
-- **Token waste on easy queries**: "What is your refund policy?" could be answered from a single short chunk. Instead, the system retrieves 10 chunks, pays for 4,000 input tokens, and the LLM ignores 9 of them. Across thousands of requests, this waste is substantial.
-- **Latency floor**: More context means more input tokens, which means higher time-to-first-token. Even when the answer is trivially available, the system pays the latency cost of processing unnecessary context.
-- **Retrieval noise**: Retrieving more chunks increases the chance of including irrelevant or contradictory information. The LLM must filter signal from noise in the context, which can degrade answer quality — more is not always better.
-- **Fixed cost regardless of difficulty**: A one-line factual lookup and a complex multi-document synthesis task consume the same retrieval and context budget. There is no cost differentiation by query complexity.
-
-Cascading context assembly aligns cost with difficulty: simple queries get simple (cheap) context, and only complex queries pay for rich context.
+But some questions really do need many chunks. A single fixed `k` is wrong for most traffic in one direction or the other.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart TD
-    A["Query arrives"] --> B["Tier 1: minimal context (1-2 chunks)"]
-    B --> C["LLM generates response + confidence signal"]
-    C --> D{"Confidence above threshold?"}
-    D -->|"Yes"| E["Return response"]
-    D -->|"No"| F["Tier 2: expanded context (5-8 chunks)"]
-    F --> G["LLM generates response + confidence signal"]
-    G --> H{"Confidence above threshold?"}
-    H -->|"Yes"| I["Return response"]
-    H -->|"No"| J["Tier 3: full context (max chunks + reranking)"]
-    J --> K["LLM generates final response"]
-    K --> L["Return response"]
+    Q["Question"] --> T1["Tier 1: top 1–2 chunks, small model"]
+    T1 -->|"answer"| R["Return"]
+    T1 -->|"INSUFFICIENT_CONTEXT"| T2["Tier 2: top 5–8 chunks"]
+    T2 -->|"answer"| R
+    T2 -->|"INSUFFICIENT_CONTEXT"| T3["Tier 3: top 15–20 (+ rerank, stronger model)"]
+    T3 -->|"answer"| R
+    T3 -->|"INSUFFICIENT_CONTEXT"| M["Honest 'not found'"]
 </pre>
 
-1. **Tier 1 — Minimal context**: Retrieve the top 1-2 most relevant chunks. Send to the LLM with an instruction to answer if confident, or respond with a structured "insufficient context" signal if not.
-2. **Confidence evaluation**: Parse the LLM's response for a confidence signal. This can be an explicit confidence score (asked for in the prompt), a refusal phrase ("I don't have enough information"), or log-probability analysis on the response tokens.
-3. **Tier 2 — Expanded context**: If Tier 1 signals low confidence, retrieve additional chunks (5-8 total) using broader search or a different retrieval strategy (switching from pure vector to hybrid search). Re-prompt with the richer context.
-4. **Tier 3 — Full context**: If Tier 2 still signals low confidence, pull maximum context with reranking, multi-source retrieval, and optionally a stronger model. This is the "spare no expense" tier reserved for genuinely difficult queries.
-5. **Response**: Return the response from the first tier that achieves sufficient confidence. Most queries resolve at Tier 1 or Tier 2.
+1. **Define tiers** as (number of chunks, model) pairs. The last tier is your current "maximum" setup.
+2. **Use an exact sentinel.** Asking the model to reply with a fixed token is far easier to detect, and more reliable, than parsing hedges or asking for a confidence number.
+3. **Escalate on the sentinel only.** An answer at tier 1 is final.
+4. **End with an honest miss.** If even the widest tier can't answer, say so. Don't let the model improvise.
+5. **Log which tier answered.** If most traffic needs tier 3, your tier 1 is too thin, or retrieval ranking is off.
 
 ## When to Use It
 
-- Your query distribution has a long tail: most queries are simple, but some require deep retrieval. You are paying Tier 3 costs for Tier 1 queries.
-- Cost reduction is a priority and you have sufficient request volume for the savings to be meaningful.
-- Latency matters and you want to serve simple queries faster without a blanket latency increase from large contexts.
-- Your retrieval quality degrades with more chunks (retrieval noise is a measured problem, not a theoretical concern).
+- Retrieval-heavy features where most questions are answered by the top few chunks.
+- Input tokens are a significant share of cost.
+- An extra round-trip on the minority of hard questions is acceptable.
 
-## When not to Use It
+## When NOT to Use It
 
-- Most queries genuinely require deep context (legal analysis, research synthesis). If Tier 3 fires on 80%+ of queries, cascading adds latency (multiple LLM calls) without saving cost.
-- The LLM cannot reliably signal low confidence. If the model confidently hallucinates at Tier 1 instead of admitting insufficient context, cascading produces wrong answers faster. Test confidence calibration before adopting this pattern.
-- Your retrieval is already cheap (small index, local embedding model, low per-token costs). The cost of an extra LLM call to evaluate confidence may exceed the savings from reduced context.
-- Strict latency SLOs that cannot tolerate the occasional multi-tier cascade. Worst-case latency increases because hard queries now take 2-3 serial LLM calls.
+- **Latency-critical paths.** An escalated question pays for two or three sequential calls. If p99 latency matters more than cost, retrieve generously once.
+- **Questions that are almost always broad** (summaries, comparisons). They'll escalate every time, so start at the wide tier.
+- **Models that won't admit insufficiency.** Some models answer from training data rather than saying the sentinel. Test this. If false answers at tier 1 are common, add a [Grounding Verifier](../retrieval-and-memory/grounding-verifier.md) or skip this pattern.
 
 ## Trade-offs
 
-1. **Confidence calibration** — The entire pattern depends on the LLM's ability to say "I don't know" when context is insufficient. Many models default to generating plausible-sounding answers. Prompt engineering and model selection are critical to making this work.
-2. **Latency variance** — Easy queries are faster, but hard queries are slower (multiple serial LLM calls). P50 improves, P99 may worsen. This variance may be unacceptable for some use cases.
-3. **Prompt complexity** — Each tier needs a prompt that elicits a usable confidence signal without being so cautious that the model refuses to answer on sufficient context.
-4. **Cascading errors** — If Tier 1 confidently returns a wrong answer, the cascade stops early with a bad response. The system optimizes for cost at the risk of missing cases where more context would have corrected the answer.
+- **Cost per question drops, and variance rises.** Easy questions get cheaper, hard ones more expensive (they pay for every failed tier).
+- **Latency becomes bimodal.** Dashboards that show only the average will hide the slow tail of escalated questions.
+- **It depends on the model being honest.** The pattern relies on the model saying "I can't answer from this" instead of guessing. Measure the guessing rate on questions where you know tier 1 doesn't have the answer.
 
 ## Failure Modes
 
-### Over-Confident Early Exit
-**Trigger**: The model reports high confidence at Tier 1 because it has strong priors from training data, even though the domain-specific answer differs from its parametric knowledge.
-**Symptom**: The system serves wrong answers cheaply and confidently. Quality metrics look fine in aggregate because most queries are correctly answered at Tier 1, but a class of domain-specific queries consistently fails.
-**Mitigation**: Validate confidence calibration on a held-out set of queries where the answer requires domain context (not general knowledge). Force a random sample of Tier 1 exits through the full cascade to measure the miss rate.
+**Confident answers from too little context.** Tier 1 doesn't contain the answer, and the model answers from general knowledge without using the sentinel. Use explicit "using only the context below" wording, evaluate it on held-out questions, and add a grounding check on tier-1 answers if this persists.
 
-### Tier Configuration Drift
-**Trigger**: New context sources are added to the system but not wired into the cascade tiers, or tier costs change (embedding model updated, new retrieval index).
-**Symptom**: The cascade skips a relevant context source. Cost assumptions are wrong — a "cheap" tier is now expensive, and the cascade does not save money anymore.
-**Mitigation**: Document the cascade tier configuration as code. Review tier composition and cost assumptions on a schedule (monthly). Alert when per-tier cost-per-query deviates from expected range.
+**Escalation storms.** A retrieval ranking regression pushes the right chunk from position 1 to 6, and suddenly every question escalates. Alert on the tier distribution, not just on cost.
 
-### Serial Latency Stacking
-**Trigger**: A hard query fails confidence checks at every tier, causing sequential LLM calls at Tier 1, Tier 2, and Tier 3.
-**Symptom**: Worst-case latency is the sum of all tier latencies. P99 latency spikes to 3x the single-call latency. Users on hard queries experience unacceptable wait times.
-**Mitigation**: Set a total cascade timeout. If the budget is exhausted, return the best response so far with a confidence disclaimer rather than continuing to cascade.
+**Re-retrieving what you already had.** Tier 2 re-fetches tier 1's chunks plus more, which is fine, but it shouldn't re-run expensive steps like query rewriting each time. Cache within the request.
 
 ## Implementation Example
 
+Tiers as (k, model), an exact insufficiency sentinel, escalation only on that sentinel, and an honest miss at the end. The test reader can only answer when the right document is in its context, which makes escalation observable.
+
+```bash
+cd examples && pytest cost_and_efficiency/test_cascading_context_assembly.py
+```
+
+<!-- example: examples/cost_and_efficiency/cascading_context_assembly.py -->
 ```python
+"""Cascading Context Assembly.
+
+Answer with a little context first. Only if the model says it can't answer
+from that, retrieve more and try again. Most questions stop at the first
+tier; the few that need everything still get it.
+
+The model is asked to reply with an exact sentinel when the context is
+insufficient, which is far more reliable to detect than hedging language.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
 
+INSUFFICIENT = "INSUFFICIENT_CONTEXT"
 
-class ConfidenceLevel(Enum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    INSUFFICIENT = "insufficient"
+PROMPT = """Answer the question using only the context below.
+If the context does not contain the answer, reply with exactly {sentinel} and nothing else.
+
+Context:
+{context}
+
+Question: {question}"""
 
 
 @dataclass
-class TierResult:
-    response: str
-    confidence: ConfidenceLevel
-    tier: int
+class Tier:
+    k: int  # chunks to retrieve
+    llm: Callable[[str], str]  # the last tier often uses a stronger model
+
+
+@dataclass
+class Result:
+    answer: str
+    tier: int  # 0-based index of the tier that answered
     chunks_used: int
-    input_tokens: int
+    calls: int
 
 
-TIER_PROMPT_SUFFIX = (
-    "\n\nAfter your answer, on a new line, provide your confidence level "
-    "as exactly one of: [HIGH_CONFIDENCE], [MEDIUM_CONFIDENCE], [LOW_CONFIDENCE], "
-    "[INSUFFICIENT_CONTEXT]. Use [INSUFFICIENT_CONTEXT] if the provided context "
-    "does not contain enough information to answer reliably."
-)
-
-
-def parse_confidence(response: str) -> tuple[str, ConfidenceLevel]:
-    confidence_map = {
-        "[HIGH_CONFIDENCE]": ConfidenceLevel.HIGH,
-        "[MEDIUM_CONFIDENCE]": ConfidenceLevel.MEDIUM,
-        "[LOW_CONFIDENCE]": ConfidenceLevel.LOW,
-        "[INSUFFICIENT_CONTEXT]": ConfidenceLevel.INSUFFICIENT,
-    }
-    for tag, level in confidence_map.items():
-        if tag in response:
-            clean_response = response.replace(tag, "").strip()
-            return clean_response, level
-    return response, ConfidenceLevel.MEDIUM
-
-
-class CascadingContextAssembler:
-    def __init__(
-        self,
-        retrieve_fn,
-        llm_fn,
-        tier_configs: list[dict] | None = None,
-        confidence_threshold: ConfidenceLevel = ConfidenceLevel.MEDIUM,
-    ):
-        self._retrieve = retrieve_fn
-        self._llm = llm_fn
-        self._threshold = confidence_threshold
-        self._tier_configs = tier_configs or [
-            {"top_k": 2, "strategy": "vector"},
-            {"top_k": 6, "strategy": "hybrid"},
-            {"top_k": 12, "strategy": "hybrid_reranked"},
-        ]
-
-    def _is_sufficient(self, confidence: ConfidenceLevel) -> bool:
-        rank = {
-            ConfidenceLevel.HIGH: 3,
-            ConfidenceLevel.MEDIUM: 2,
-            ConfidenceLevel.LOW: 1,
-            ConfidenceLevel.INSUFFICIENT: 0,
-        }
-        return rank[confidence] >= rank[self._threshold]
-
-    def answer(self, query: str) -> TierResult:
-        for tier_idx, config in enumerate(self._tier_configs):
-            chunks = self._retrieve(
-                query,
-                top_k=config["top_k"],
-                strategy=config["strategy"],
-            )
-
-            context = "\n\n---\n\n".join(chunks)
-            prompt = (
-                f"Answer the question using only the provided context.\n\n"
-                f"Context:\n{context}\n\n"
-                f"Question: {query}"
-                f"{TIER_PROMPT_SUFFIX}"
-            )
-
-            raw_response = self._llm(prompt)
-            clean_response, confidence = parse_confidence(raw_response)
-
-            if self._is_sufficient(confidence) or tier_idx == len(self._tier_configs) - 1:
-                return TierResult(
-                    response=clean_response,
-                    confidence=confidence,
-                    tier=tier_idx + 1,
-                    chunks_used=len(chunks),
-                    input_tokens=len(prompt.split()) * 2,
-                )
-
-        return TierResult(
-            response=clean_response,
-            confidence=confidence,
-            tier=len(self._tier_configs),
-            chunks_used=len(chunks),
-            input_tokens=len(prompt.split()) * 2,
-        )
+def answer(
+    question: str,
+    retrieve: Callable[[str, int], list[str]],  # (query, k) -> chunks, best first
+    tiers: list[Tier],
+) -> Result:
+    for i, tier in enumerate(tiers):
+        chunks = retrieve(question, tier.k)
+        reply = tier.llm(PROMPT.format(sentinel=INSUFFICIENT, context="\n---\n".join(chunks), question=question))
+        if INSUFFICIENT not in reply:
+            return Result(reply.strip(), i, len(chunks), i + 1)
+    # Even the widest tier couldn't answer: say so rather than letting the model guess.
+    return Result("I couldn't find that in the available documents.", len(tiers) - 1, len(chunks), len(tiers))
 ```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| LlamaIndex Response Synthesizers | Framework | Supports compact, refine, and tree-summarize modes as escalation tiers |
-| LangChain LCEL | Framework | Compose multi-step chains with conditional branching based on output |
-| Semantic Kernel (Microsoft) | Framework | Planner can dynamically decide how much context to retrieve |
-| Cohere Rerank | API | Useful as the escalation step between Tier 2 and Tier 3 |
-| Custom pipeline | DIY | Necessary for tight control over tier boundaries and confidence parsing |
+| Tool | Notes |
+|---|---|
+| LlamaIndex, LangChain | Router and retriever components to build tiered retrieval |
+| LangGraph | Conditional edges for "retrieve more" loops |
+| Your gateway's model routing | Pair later tiers with stronger models |
 
 ## Related Patterns
 
-- **[Token Budget Pattern](/AI-Engineering-Patterns/patterns/cost-and-efficiency/token-budget/)** — Token budgets set the hard ceiling; cascading context decides how much of that budget to use per request.
-- **[Model Router Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/model-router/)** — Can be combined: Tier 1 uses a cheap model with minimal context; Tier 3 uses a powerful model with full context.
-- **[Hybrid Search](/AI-Engineering-Patterns/patterns/retrieval-and-memory/hybrid-search/)** — Tier escalation can switch retrieval strategies (vector-only at Tier 1, hybrid at Tier 2).
-- **[Semantic Caching](/AI-Engineering-Patterns/patterns/inference-and-serving/semantic-caching/)** — Cache responses from all tiers. A Tier 1 cache hit avoids even the minimal retrieval cost.
+- [Token Budget](token-budget.md) caps the widest tier.
+- [Model Router](../inference-and-serving/model-router.md) uses the same escalation idea for model choice. The two combine naturally.
+- [Retrieval Quality Gate](../retrieval-and-memory/retrieval-quality-gate.md) can make tier 1 more trustworthy by keeping only chunks that clearly answer the question.
+- [Uncertainty-Triggered Retry](../reliability/uncertainty-triggered-retry.md) escalates on unsure answers. This pattern escalates on missing context.
 
 ## Further Reading
 
-- [Adaptive Retrieval-Augmented Generation — Microsoft Research](https://arxiv.org/abs/2403.14403)
-- [Self-RAG: Learning to Retrieve, Generate, and Critique (Asai et al., 2023)](https://arxiv.org/abs/2310.11511)
-- [When Less is More: Investigating the Role of Context Length in RAG](https://arxiv.org/abs/2404.07981)
+- [Adaptive-RAG: Learning to Adapt Retrieval-Augmented Large Language Models through Question Complexity](https://arxiv.org/abs/2403.14403), Jeong et al., 2024
+- [Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection](https://arxiv.org/abs/2310.11511), Asai et al., 2023
+- [FrugalGPT](https://arxiv.org/abs/2305.05176), Chen, Zaharia and Zou, 2023. LLM cascades.

@@ -13,7 +13,7 @@ sidebar:
   order: 3
 ---
 
-> *This analysis is based on public engineering blog posts, conference talks, patent filings, and observable system behaviour. It is not official documentation from the company.*
+> *Built from OpenAI's public SDK code, documentation and guides listed under References. Where we describe how a pattern is applied beyond what those sources show, the section says so. This is not official documentation.*
 
 ## System Context
 
@@ -48,7 +48,7 @@ Without a structured framework, production multi-agent systems built on raw API 
 | Span-Level Tracing | Every agent run emits spans covering model calls, tool executions, handoffs, and guardrail evaluations. Traces integrate with OpenAI's evaluation, fine-tuning, and distillation tooling without additional instrumentation. |
 | Circuit Breaker for LLMs | Protects against cascading failures when tools or models timeout; SDK implements graceful degradation and retry logic to prevent agent loops from stalling. |
 
-```mermaid
+<pre class="mermaid">
 flowchart TD
     U([User Input]) --> IG[Input<br/>Guardrails]
     IG -->|Tripwire<br/>Triggered| ERR([Reject +<br/>Error Response])
@@ -75,7 +75,7 @@ flowchart TD
     end
 
     LOOP <--> Session
-```
+</pre>
 
 ## Architecture Walkthrough
 
@@ -108,7 +108,7 @@ The choice between the two multi-agent coordination patterns has significant con
 | Agent awareness | Each agent knows about potential handoff targets | Only the manager knows about specialists |
 | Reversibility | Handoff is a one-way transfer (unless specialist hands back) | Manager can retry, re-route, or synthesise from multiple specialists |
 
-```mermaid
+<pre class="mermaid">
 sequenceDiagram
     participant U as User
     participant R as Runner
@@ -150,7 +150,7 @@ sequenceDiagram
         R->>S: Persist history
         R-->>U: Final response
     end
-```
+</pre>
 
 ## Pattern Interaction Notes
 
@@ -220,4 +220,3 @@ sequenceDiagram
 4. [Context Engineering: Short-Term Memory Management with Sessions — OpenAI Cookbook, 2025](https://cookbook.openai.com/examples/agents_sdk/session_memory)
 5. [OpenAI for Developers 2025 — OpenAI Developer Blog](https://developers.openai.com/blog/openai-for-developers-2025)
 6. [Multi-Agent Portfolio Collaboration with OpenAI Agents SDK — OpenAI Cookbook, 2025](https://developers.openai.com/cookbook/examples/agents_sdk/multi-agent-portfolio-collaboration/multi_agent_portfolio_collaboration)
-7. [OpenAI Agents SDK — AI Wiki, 2026](https://aiwiki.ai/wiki/openai_agents_sdk)

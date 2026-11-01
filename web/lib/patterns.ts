@@ -28,6 +28,19 @@ export const PILLAR_LABELS: Record<string, string> = {
   'loop-engineering': 'Loop Engineering',
 }
 
+export const PILLAR_DESCRIPTIONS: Record<string, string> = {
+  'inference-and-serving': 'Getting requests to the right model, cheaply and reliably.',
+  'retrieval-and-memory': 'Finding the right context, and knowing when it isn’t there.',
+  'data-patterns': 'Keeping the data under your index and models trustworthy.',
+  'reliability': 'Staying up when providers slow down, fail, or return junk.',
+  'observability-and-evaluation': 'Seeing what happened, and knowing whether quality moved.',
+  'security-and-trust': 'Limiting what bad input, or a hijacked agent, can do.',
+  'cost-and-efficiency': 'Spending tokens and tool calls where they matter.',
+  'governance': 'Approvals, rollouts and documentation that hold up.',
+  'graph-patterns': 'Relationships, entities and reasoning beyond a single chain.',
+  'loop-engineering': 'Agent loops that stop, verify, learn and recover.',
+}
+
 export const STATUS_LABELS: Record<string, string> = {
   'proposed': 'Proposed',
   'emerging': 'Emerging',
@@ -54,21 +67,22 @@ export function getPatternBySlug(slug: string) {
   return patterns.find((p) => p.slug === slug)
 }
 
-// Resolves human-readable related pattern names (e.g. "Hybrid Search Pattern")
-// to actual pattern objects by fuzzy-matching against titles.
+// Must stay in sync with normalize() in scripts/validate-schema.js, which
+// fails the build when a related name matches no title.
+export function normalizeTitle(s: string) {
+  return s
+    .toLowerCase()
+    .replace(/[–—]/g, '-')
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Resolves related pattern titles from frontmatter to pattern objects.
 export function resolveRelated(names: string[]) {
   return names.map((name) => {
-    const needle = name
-      .toLowerCase()
-      .replace(/\s+pattern$/i, '')
-      .replace(/[^a-z0-9\s]/g, '')
-      .trim()
-
-    const found = patterns.find((p) => {
-      const haystack = p.title.toLowerCase().replace(/[^a-z0-9\s]/g, '')
-      return haystack === needle || haystack.includes(needle) || needle.includes(haystack)
-    })
-
+    const needle = normalizeTitle(name)
+    const found = patterns.find((p) => normalizeTitle(p.title) === needle)
     return { name, pattern: found ?? null }
   })
 }

@@ -4,185 +4,210 @@ pillar: inference-and-serving
 status: validated-in-production
 tags: [caching, cost, latency, embeddings]
 related:
-  - LLM Gateway Pattern
-  - Model Router Pattern
-  - Prompt Compression Pattern
+  - LLM Gateway
+  - Model Router
+  - Retrieval Freshness Watermark
+  - Context Compaction
+example: examples/inference_and_serving/semantic_caching.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-03"
-description: Cache LLM responses by meaning rather than exact text match, serving similar queries from cache for 40-60% cost reduction.
+last_updated: "2026-11"
+description: Answer a query from cache when it means the same as one you've already answered, and stop near-misses from serving the wrong answer.
 sidebar:
   order: 3
 ---
 
 ## What It Is
 
-Semantic caching stores LLM responses indexed by the meaning of the query rather than the exact string. When a new query arrives, its embedding is compared against cached query embeddings. If a sufficiently similar query exists in the cache, the cached response is returned without making an LLM call.
+A cache keyed by meaning instead of exact text. Each incoming query is embedded and compared with the queries already in the cache. If one is close enough, its stored answer is returned without calling the model.
+
+The idea is simple. The hard part is the edge cases: two questions that embed close together but need different answers, and cached answers that were right last week and are wrong today.
 
 ## The Problem It Solves
 
-Traditional exact-match caching misses the vast majority of cache opportunities in LLM workloads. Users phrase the same question in dozens of different ways. "What's your return policy?" and "How do I return an item?" are semantically identical but share no cache key in a string-match system. Without semantic caching, every rephrasing triggers a full inference call at full cost and latency.
+Exact-match caching barely helps with natural language. "What's your return policy?", "how do returns work" and "can I send this back?" are the same question, but they share no cache key. On support and FAQ-style workloads a large share of traffic is rephrasings of a small set of questions, and each one pays full model cost and latency.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart TD
-A["Query arrives"] --> B["Generate embedding"]
-B --> C{"Search cache\n(cosine similarity)"}
-C -->|"Hit (sim ≥ threshold)"| D["Return cached response"]
-C -->|"Miss"| E["Call LLM"]
-E --> F["Cache response with TTL"]
-F --> G["Return response"]
+    Q["Query + system prompt + tenant"] --> K["Scope key<br/>hash(tenant, system prompt)"]
+    Q --> E["Embed query"]
+    K & E --> L{"Nearest cached query<br/>in the same scope ≥ threshold?"}
+    L -->|"hit"| H["Return cached answer"]
+    L -->|"miss"| M["Call model"]
+    M --> C{"Answer worth caching?"}
+    C -->|"yes"| S["Store with TTL + source doc IDs"]
+    C -->|"no"| R["Return without caching"]
+    S --> R
+    D["Doc updated in ingestion"] -.->|"invalidate entries citing it"| S
 </pre>
 
-1. A new query arrives and is converted to an embedding vector using a lightweight embedding model.
-2. The embedding is compared against all cached query embeddings using cosine similarity (or approximate nearest neighbor search).
-3. If any cached query has similarity above the configured threshold (typically 0.92-0.97), the cached response is returned.
-4. On a cache miss, the query is sent to the LLM. The response, along with the query embedding, is stored in the cache with a TTL.
-5. Cache entries expire based on TTL or are evicted using LRU when the cache reaches capacity.
+1. **Scope first.** Only compare against entries with the same tenant and system prompt. The same words under a different persona, or for a different customer, are a different question.
+2. **Embed and search.** Find the nearest cached query in that scope. Return its answer if the similarity is at or above the threshold.
+3. **On a miss, call the model** and store the answer only if it passes a quality check. Caching a refusal or an empty answer turns one bad response into hundreds.
+4. **Expire and invalidate.** Every entry has a TTL. Entries also record which source documents they were built from, so the ingestion pipeline can evict them when those documents change.
+5. **Watch the hit rate.** A sudden drop usually means the embedding model or the prompt template changed.
 
 ## When to Use It
 
-- Customer support or FAQ workloads where users ask similar questions repeatedly.
-- Internal tools where the same types of queries recur across users.
-- Any workload with high query repetition and tolerance for slightly stale answers.
-- Cost reduction is a priority and sub-second latency is desirable for common queries.
+- Support bots, FAQ assistants, internal help desks: anywhere people keep asking the same few things.
+- Answers that stay correct for hours or days.
+- Cost or latency on repeated questions is a real problem.
 
-## When not to Use It
+## When NOT to Use It
 
-- Queries depend on real-time data that changes between requests (stock prices, live inventory). Cached responses will be stale and wrong.
-- Every query is genuinely unique (code generation with different specifications, creative writing with unique prompts). Hit rates will be near zero, and you pay the embedding cost on every request for no benefit.
-- The system prompt or context changes frequently per request. Two queries may be textually similar but have different system prompts, making cached responses incorrect.
-- You need deterministic, auditable responses where every interaction must be independently generated and logged.
+- **Answers depend on live state.** Order status, prices or inventory need fresh data. Cache the retrieval layer, not the final answer.
+- **Every request is unique.** Code generation or creative prompts with distinct specs will barely hit, and you still pay for an embedding on every request.
+- **Answers are personalized.** If the answer depends on who's asking, the user has to be part of the scope key, and then the hit rate collapses.
 
 ## Trade-offs
 
-1. **Embedding cost** — Every query requires an embedding call even on cache hits. For very cheap models, the embedding cost can approach the inference cost, reducing the net savings.
-2. **Similarity threshold tuning** — Too high and you miss valid cache hits. Too low and you serve wrong answers for different-enough queries. Requires monitoring and adjustment per workload.
-3. **Stale responses** — Cached answers may be outdated if the underlying knowledge changes. TTL must be tuned to the data freshness requirements.
-4. **Cache poisoning** — A low-quality response that gets cached will be served to many users. Consider caching only responses that pass quality checks.
+- **The threshold is a precision/recall dial with no safe default.** Too strict and you never hit. Too loose and "cancel my subscription" matches "cancel my order". Tune it on labelled pairs from your own traffic, not on a number from a blog post (including this one).
+- **Staleness is guaranteed.** A cache serves old answers by design. TTLs and source-based invalidation keep that within bounds, but they don't remove it.
+- **Every query pays for an embedding,** hit or miss. That's cheap next to a large model, but less so next to a small one.
 
 ## Failure Modes
 
-### Semantic False Match
-**Trigger**: Two queries are semantically similar according to embeddings but require different answers ("cancel my subscription" vs. "can I cancel my flight?").
-**Symptom**: Users receive cached answers meant for a different intent. Complaints about wrong answers that are hard to reproduce because they depend on cache state.
-**Mitigation**: Include system prompt hash and key context variables in the cache key — not just query similarity. Add a minimum exact-token-overlap threshold alongside cosine similarity.
+**Near-miss answers.** Two queries embed close together and want different answers: "can I cancel my flight" and "can I cancel my subscription", or "is X compatible with Y" and "is X compatible with Z". Users get a confident answer to a question they didn't ask, and it's hard to reproduce because it depends on what's in the cache. Raise the threshold for short queries, where one word carries most of the meaning, and log the matched cached query next to every hit so you can audit them.
 
-### Stale Cache Serving Outdated Facts
-**Trigger**: Underlying knowledge changes (product price, policy update) but cached responses still contain old information.
-**Symptom**: Users get confidently delivered wrong facts. The issue is intermittent — some users get the cache hit, others get fresh (correct) responses.
-**Mitigation**: Set TTLs based on content volatility. Implement cache invalidation hooks tied to knowledge base updates. Tag cached entries with source document versions.
+**Serving stale facts.** The refund window changes from 30 days to 14. Half your users get the new answer and half get the cached one, depending on how they phrased it. Tag entries with their source documents and invalidate when ingestion sees a change.
 
-### Cache Hit Rate Collapse
-**Trigger**: Embedding model update, prompt template change, or system prompt modification shifts the embedding space.
-**Symptom**: Cache hit rate drops to near zero overnight. Costs spike because every query goes to the LLM. The cache becomes pure overhead.
-**Mitigation**: Monitor hit rate as a key metric with alerting threshold. On embedding model changes, warm the cache with historical queries or accept a grace period.
+**Hit rate falls to zero.** Someone upgrades the embedding model, or edits the system prompt, which changes every scope key. The cache is now pure overhead. Alert on hit rate, and treat both kinds of change as a cache migration.
 
 ## Implementation Example
 
-```python
-import hashlib
-import json
-import time
-from dataclasses import dataclass
+A scoped, TTL'd semantic cache with source invalidation and a quality gate on writes. The tests use a toy bag-of-words embedder so they run offline. In production, pass your real embedding function and back `entries` with a vector index.
 
-import numpy as np
+```bash
+cd examples && pytest inference_and_serving/test_semantic_caching.py
+```
+
+<!-- example: examples/inference_and_serving/semantic_caching.py -->
+```python
+"""Semantic Caching.
+
+Serve a cached answer when a new query means the same thing as an old one.
+The similarity threshold is only half the safety story: entries are also
+scoped (same system prompt, same tenant), expire, and can be invalidated when
+the documents they were built from change.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+Embed = Callable[[str], list[float]]
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5 or 1.0
+    nb = sum(y * y for y in b) ** 0.5 or 1.0
+    return dot / (na * nb)
 
 
 @dataclass
-class CacheEntry:
-    query_embedding: np.ndarray
-    response: dict
-    created_at: float
-    ttl: float
+class Entry:
+    query: str
+    vector: list[float]
+    answer: str
+    scope: str
+    sources: frozenset[str]
+    expires_at: float
 
 
+@dataclass
 class SemanticCache:
-    def __init__(self, similarity_threshold: float = 0.95, default_ttl: float = 3600):
-        self._entries: list[CacheEntry] = []
-        self._threshold = similarity_threshold
-        self._default_ttl = default_ttl
+    embed: Embed
+    threshold: float = 0.92  # tune per workload against labelled near-duplicate pairs
+    ttl_s: float = 3600.0
+    max_entries: int = 10_000
+    clock: Callable[[], float] = time.monotonic
+    entries: list[Entry] = field(default_factory=list)
+    hits: int = 0
+    misses: int = 0
 
     @staticmethod
-    def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-        dot = np.dot(a, b)
-        norm = np.linalg.norm(a) * np.linalg.norm(b)
-        if norm == 0:
-            return 0.0
-        return float(dot / norm)
+    def scope_key(system_prompt: str, tenant: str) -> str:
+        # Two identical questions under different system prompts are different questions.
+        return hashlib.sha256(f"{tenant}\x00{system_prompt}".encode()).hexdigest()[:16]
 
-    def _evict_expired(self) -> None:
-        now = time.monotonic()
-        self._entries = [
-            e for e in self._entries if (now - e.created_at) < e.ttl
-        ]
+    def lookup(self, query: str, scope: str) -> str | None:
+        now = self.clock()
+        self.entries = [e for e in self.entries if e.expires_at > now]
+        vector = self.embed(query)
+        best, best_sim = None, self.threshold
+        for entry in self.entries:
+            if entry.scope != scope:
+                continue
+            sim = _cosine(vector, entry.vector)
+            if sim >= best_sim:
+                best, best_sim = entry, sim
+        if best is None:
+            self.misses += 1
+            return None
+        self.hits += 1
+        return best.answer
 
-    def lookup(self, query_embedding: np.ndarray) -> dict | None:
-        self._evict_expired()
-        best_similarity = 0.0
-        best_entry = None
-
-        for entry in self._entries:
-            sim = self._cosine_similarity(query_embedding, entry.query_embedding)
-            if sim > best_similarity:
-                best_similarity = sim
-                best_entry = entry
-
-        if best_entry and best_similarity >= self._threshold:
-            return best_entry.response
-        return None
-
-    def store(
-        self, query_embedding: np.ndarray, response: dict, ttl: float | None = None
-    ) -> None:
-        self._entries.append(
-            CacheEntry(
-                query_embedding=query_embedding,
-                response=response,
-                created_at=time.monotonic(),
-                ttl=ttl or self._default_ttl,
-            )
+    def store(self, query: str, answer: str, scope: str, sources: set[str] = frozenset()) -> None:
+        if len(self.entries) >= self.max_entries:
+            self.entries.pop(0)  # oldest first; good enough when TTLs do most of the eviction
+        self.entries.append(
+            Entry(query, self.embed(query), answer, scope, frozenset(sources), self.clock() + self.ttl_s)
         )
 
+    def invalidate_source(self, source_id: str) -> int:
+        """Call from your ingestion pipeline when a document changes."""
+        before = len(self.entries)
+        self.entries = [e for e in self.entries if source_id not in e.sources]
+        return before - len(self.entries)
 
-async def cached_completion(
+    @property
+    def hit_rate(self) -> float:
+        total = self.hits + self.misses
+        return self.hits / total if total else 0.0
+
+
+def cached_complete(
     cache: SemanticCache,
-    embed_fn,
-    llm_fn,
+    llm: Callable[[str], str],
     query: str,
-    **kwargs,
-) -> dict:
-    query_embedding = await embed_fn(query)
-    cached = cache.lookup(query_embedding)
-    if cached is not None:
-        return cached
-
-    response = await llm_fn(query, **kwargs)
-    cache.store(query_embedding, response)
-    return response
+    system_prompt: str,
+    tenant: str,
+    cacheable: Callable[[str], bool] = lambda answer: bool(answer.strip()),
+) -> tuple[str, bool]:
+    """Returns (answer, was_cache_hit). Only answers that pass `cacheable` are stored."""
+    scope = cache.scope_key(system_prompt, tenant)
+    hit = cache.lookup(query, scope)
+    if hit is not None:
+        return hit, True
+    answer = llm(f"{system_prompt}\n\n{query}")
+    if cacheable(answer):
+        cache.store(query, answer, scope)
+    return answer, False
 ```
-
-For production use, replace the in-memory list with a vector database (Redis with vector search, Qdrant, or Pinecone) to support persistence, distributed access, and approximate nearest neighbor search at scale.
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| GPTCache | Open-source library | Purpose-built semantic cache for LLM applications |
-| Redis + RediSearch | Infrastructure | Vector similarity search on top of Redis, good for existing Redis users |
-| Qdrant | Vector database | Can serve as both a retrieval store and semantic cache |
-| Portkey | Managed gateway | Built-in semantic caching at the gateway layer |
-| Momento | Managed cache | Serverless caching with vector search support |
+| Tool | Notes |
+|---|---|
+| GPTCache | Open-source library dedicated to semantic caching |
+| Redis (vector search) / RedisVL | `SemanticCache` class; a good fit if Redis is already in your stack |
+| LiteLLM, Portkey | Semantic caching at the gateway, configured rather than coded |
+| Any vector DB (Qdrant, pgvector, …) | Store query embeddings next to answers; you write the policy |
 
 ## Related Patterns
 
-- **[LLM Gateway Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/llm-gateway/)** — The gateway is the natural integration point for semantic caching.
-- **[Model Router Pattern](/AI-Engineering-Patterns/patterns/inference-and-serving/model-router/)** — Routing decisions happen before cache lookup in the request pipeline.
-- **[Prompt Compression Pattern](/AI-Engineering-Patterns/patterns/cost-and-efficiency/prompt-compression/)** — Another cost reduction pattern. Can be combined: compress, then cache.
-- **[Cost Attribution Pattern](/AI-Engineering-Patterns/patterns/observability/cost-attribution/)** — Track cache hit rates per feature to measure cost savings.
+- [LLM Gateway](llm-gateway.md) is where the cache usually lives, so every caller benefits.
+- [Model Router](model-router.md) runs after the cache. A hit never reaches the router.
+- [Retrieval Freshness Watermark](../retrieval-and-memory/retrieval-freshness-watermark.md) tackles the same staleness problem one layer down.
+- [Context Compaction](../cost-and-efficiency/context-compaction.md) cuts the cost of the misses.
 
 ## Further Reading
 
-- [GPTCache: An Open-Source Semantic Cache for LLM Applications](https://github.com/zilliztech/GPTCache)
-- [Semantic Caching for GenAI — Redis Technical Blog](https://redis.io/blog/semantic-caching-for-genai/)
-- [Caching Strategies for LLM Applications — Langchain Documentation](https://python.langchain.com/docs/integrations/llm_caching/)
+- [GPTCache](https://github.com/zilliztech/GPTCache), Zilliz
+- [RedisVL semantic caching guide](https://docs.redisvl.com/en/latest/user_guide/03_llmcache.html)

@@ -2,238 +2,185 @@
 title: LLM-as-Judge
 pillar: observability-and-evaluation
 status: validated-in-production
-tags: [evaluation, llm-judge, quality, testing, automated-eval]
+tags: [evaluation, llm-judge, quality, testing]
 related:
+  - Prompt Mutation Testing
+  - Shadow Model Evaluation
+  - Grounding Verifier
   - Span-Level Tracing
-  - Circuit Breaker for LLMs
-  - Model Card
+example: examples/observability_and_evaluation/llm_as_judge.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-07"
-description: Use a strong LLM to evaluate outputs from another model, replacing expensive human evaluation with scalable automated quality scoring.
+last_updated: "2026-11"
+description: Use a model to grade outputs against a concrete rubric. Run comparisons in both orders and check the judge against human labels before trusting its scores.
 sidebar:
   order: 2
 ---
 
 ## What It Is
 
-LLM-as-Judge uses a strong language model (the "judge") to evaluate the outputs of another model (the "candidate"). Instead of relying on human evaluators for every quality check, you define evaluation criteria as a structured prompt, feed the candidate's output to the judge model, and receive a score or pass/fail decision. This enables continuous, automated quality measurement at a fraction of the cost and latency of human evaluation.
+A judge model reads a question, an answer and a rubric, and returns a score with a short justification. Or it reads two answers and picks the better one. It's how most teams evaluate open-ended output at a scale humans can't cover: regression suites before each deploy, and sampled scoring of live traffic.
+
+The pattern is easy to build and easy to fool yourself with. Most of this page is about the second part.
 
 ## The Problem It Solves
 
-AI systems degrade silently. A prompt change, model update, or data shift can reduce output quality without any error being thrown. The standard approaches to catching this have fundamental limitations:
+Quality regresses quietly. A prompt tweak, a model upgrade or a retrieval change makes answers slightly worse, and nothing throws an error. Exact-match tests can't grade "was this helpful and correct?". Humans can, but not for 500 cases on every pull request, or for 1% of daily traffic.
 
-- **Human evaluation** is accurate but does not scale. You cannot have humans review every response in production.
-- **Rule-based checks** (regex, keyword matching) catch format issues but miss semantic quality — whether the response is actually helpful, accurate, or safe.
-- **Embedding similarity** measures distance from reference outputs but does not capture nuanced quality dimensions like reasoning coherence or factual accuracy.
-
-LLM-as-Judge bridges the gap: it scales like automated checks but evaluates like a human reviewer.
+A judge sits between those options. It's not as reliable as a careful human, but it's consistent, fast and cheap enough to run all the time, as long as you've measured *how* unreliable it is.
 
 ## How It Works
 
-```mermaid
+<pre class="mermaid">
 flowchart TD
-    A["Candidate model output"] --> B["Build judge prompt (query + rubric + output)"]
-    C["Reference answer (optional)"] --> B
-    B --> D["Judge model evaluates response"]
-    D --> E["Structured scores + rationale"]
-    E --> F["Aggregate metrics across eval set"]
-    F --> G{"Regression detected?"}
-    G -->|"Yes"| H["Alert team or block release"]
-    G -->|"No"| I["Approve iteration"]
-```
+    H["~100 human-labelled examples"] --> C{"Judge agrees with<br/>humans often enough?"}
+    C -->|"no"| RB["Fix rubric / change judge"]
+    RB --> C
+    C -->|"yes"| U["Use judge"]
+    U --> S["Pointwise: rubric score 1–4"]
+    U --> P["Pairwise: A vs B,<br/>asked in both orders"]
+    S & P --> A["Aggregate per release / per day"]
+    A --> G{"Regression?"}
+    G -->|"yes"| B["Block deploy or alert"]
+</pre>
 
-1. **Define evaluation criteria** — Create a rubric with specific dimensions: accuracy, helpfulness, safety, formatting, reasoning quality. Each dimension gets a clear scoring guide.
-2. **Construct the judge prompt** — Include the original query, the candidate's output, the rubric, and optionally a reference answer. Ask the judge to score each dimension and provide reasoning.
-3. **Call the judge model** — Use a stronger or equal-tier model as the judge. The judge returns structured scores with chain-of-thought reasoning for each dimension.
-4. **Parse and aggregate** — Extract scores from the judge's response, aggregate across eval sets, and track trends over time.
-5. **Alert on regression** — Set thresholds on aggregate scores. When quality drops below threshold, trigger alerts or block deployments.
+1. **Write a rubric with concrete levels.** "4 = right, complete and concise" works better than "rate helpfulness 1–10". Tell the judge outright that length and confidence are not quality.
+2. **Ask for a short justification first, then the score,** as structured output. Treat an unparseable verdict as missing data, never as a default score.
+3. **Run pairwise comparisons in both orders.** Judges tend to favour whichever answer they read first. If the verdict flips when you swap the order, record a tie.
+4. **Calibrate against humans.** Label about 100 examples yourself and measure exact and within-one agreement. Repeat whenever you change the judge model or the rubric.
+5. **Track the aggregate, not single scores.** One judge score is noisy. The mean over a few hundred cases is a usable signal.
 
 ## When to Use It
 
-- You need continuous quality monitoring in production but cannot afford human review on every response.
-- You are running eval suites before deploying prompt or model changes and need a quality gate.
-- Your quality dimensions are semantic (helpfulness, accuracy, tone) rather than structural (format, length).
-- You have a stronger model available as the judge (e.g., GPT-4o judging GPT-4o-mini outputs).
-- You want to scale evaluation across hundreds of test cases that would take human reviewers days.
+- Open-ended outputs (answers, summaries, explanations) where exact match doesn't apply.
+- Pre-deploy regression checks on prompts and models.
+- Sampled monitoring of production quality between human reviews.
 
 ## When NOT to Use It
 
-- The candidate model is as strong or stronger than any available judge. The judge cannot reliably evaluate outputs it could not produce itself. Using GPT-4o-mini to judge GPT-4o outputs produces unreliable scores.
-- Your evaluation criteria are purely objective and can be checked programmatically (exact match, JSON schema validation, code compilation). Deterministic checks are cheaper and more reliable.
-- You need legally defensible evaluation (compliance, medical, legal). LLM-as-Judge introduces its own biases and hallucinations — human review is required for high-stakes decisions.
-- The evaluation budget exceeds the cost of the candidate model calls themselves. If judge calls cost more than the original inference, the economics do not work.
+- **The check can be done in code.** JSON validity, "contains the order ID", "compiles", "matches the reference exactly": write a test. It's cheaper and it's right every time.
+- **The judge is weaker than the model being judged.** A small model grading a frontier model's reasoning mostly measures its own limits.
+- **Decisions that need accountability.** Compliance sign-off, medical review and individual performance evaluation need a human. The judge can triage, but it can't sign off.
 
 ## Trade-offs
 
-1. **Judge bias** — LLMs have systematic biases: they prefer longer responses, responses that match their own style, and responses that appear more confident. These biases propagate into your quality metrics.
-2. **Position bias** — In comparative evaluation (A vs B), the judge often prefers whichever response is presented first. Mitigate by running evaluations in both orders and averaging.
-3. **Cost overhead** — Each evaluation requires an additional LLM call, typically with a longer prompt than the original inference. Budget 20-40% additional inference cost for comprehensive evaluation.
-4. **Rubric engineering** — The quality of evaluation depends entirely on the quality of the rubric prompt. Vague criteria produce inconsistent scores. Building a reliable rubric takes iteration.
+- **Known biases.** Judges favour the first answer, longer answers, and answers in their own style, sometimes from their own model family. Swapping orders, length-neutral rubrics and a judge from a different family all help, and none of them remove the bias entirely.
+- **Cost.** A judge prompt holds the question, the answer, the rubric and maybe a reference, so it's often longer than the original call. Sample production traffic. Don't judge all of it.
+- **Rubric work never ends.** Your first rubric will give everything a 4. Expect several rounds against known-bad examples.
 
 ## Failure Modes
 
-| Trigger | Symptom | Mitigation |
-|---------|---------|-----------|
-| Judge model and candidate from same family | Judge consistently rates its own family higher regardless of objective quality | Use judges from different model family; cross-validate with human eval on sample; track judge-human agreement |
-| Rubric ambiguity (subjective terms without examples) | All scores cluster near top; metric loses discriminative power | Define each score level with explicit examples; include negative examples; test on known-bad outputs |
-| Position bias in A/B comparisons | Results depend on presentation order not actual quality | Run every comparison both ways (A-B and B-A); average results; report self-consistency rate |
+**Score inflation.** Every response scores 3 or 4, so the metric can't separate a good release from a bad one. Include known-bad answers in the calibration set. If the judge rates them 3, the rubric is too vague.
+
+**Judging the wrong thing.** The judge rewards confident, polished, well-formatted answers that are wrong. Give it a reference answer or the source documents for factual questions. For pure grounding, use a dedicated [Grounding Verifier](../retrieval-and-memory/grounding-verifier.md).
+
+**Silent judge drift.** The judge model is upgraded behind an alias and scores shift by half a point. The dashboard calls it a quality change. Pin the judge model version, and re-run calibration whenever you change it.
 
 ## Implementation Example
 
+Pointwise scoring with a concrete rubric and strict parsing, pairwise comparison in both orders where disagreement becomes a tie, and an agreement check against human labels. The tests include a judge that always picks "A", which this setup correctly reports as a tie.
+
+```bash
+cd examples && pytest observability_and_evaluation/test_llm_as_judge.py
+```
+
+<!-- example: examples/observability_and_evaluation/llm_as_judge.py -->
 ```python
+"""LLM-as-Judge.
+
+A judge model scores outputs against a rubric whose levels are described
+concretely. Two habits make the scores worth trusting: pairwise comparisons
+are run in both orders (judges favour whichever answer they read first), and
+the judge is checked against human labels before anyone believes its numbers.
+"""
+
+from __future__ import annotations
+
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 
+Judge = Callable[[str], str]
 
-@dataclass
-class EvalResult:
-    dimension: str
-    score: int
-    reasoning: str
+RUBRIC = """Score the RESPONSE to the QUESTION for correctness and helpfulness.
+1 = wrong or harmful. 2 = partly right but misleading or missing the key point.
+3 = right but incomplete or padded. 4 = right, complete and concise.
+Judge substance only; length and confidence are not quality.
+Reply with JSON: {"reasoning": "<one or two sentences>", "score": 1|2|3|4}"""
 
-
-@dataclass
-class JudgeVerdict:
-    results: list[EvalResult]
-    overall_score: float
-    raw_response: str
+PAIRWISE = """Which response answers the QUESTION better? Judge substance, not length.
+Reply with JSON: {"reasoning": "<one sentence>", "winner": "A"|"B"|"tie"}"""
 
 
-JUDGE_PROMPT = """You are an expert evaluator. Score the following AI response on each dimension using the rubric below.
-
-QUERY: {query}
-
-RESPONSE TO EVALUATE:
-{response}
-
-{reference_section}
-
-RUBRIC:
-{rubric}
-
-Return your evaluation as JSON with this exact structure:
-{{
-  "evaluations": [
-    {{
-      "dimension": "<dimension name>",
-      "score": <1-5>,
-      "reasoning": "<one sentence explanation>"
-    }}
-  ]
-}}
-
-Score each dimension independently. Be strict — a 3 means acceptable, 4 means good, 5 means excellent."""
-
-DEFAULT_RUBRIC = """- accuracy (1-5): Are the facts correct? Does the response contain hallucinations?
-- helpfulness (1-5): Does the response actually answer the question? Is it actionable?
-- safety (1-5): Does the response avoid harmful, biased, or inappropriate content?
-- coherence (1-5): Is the reasoning logical and the response well-structured?"""
+def _parse(raw: str) -> dict:
+    start, end = raw.find("{"), raw.rfind("}")
+    return json.loads(raw[start : end + 1])
 
 
-def build_judge_prompt(
-    query: str,
-    response: str,
-    rubric: str = DEFAULT_RUBRIC,
-    reference: str | None = None,
-) -> str:
-    ref_section = ""
+def score(judge: Judge, question: str, response: str, reference: str | None = None) -> int | None:
+    prompt = f"{RUBRIC}\n\nQUESTION:\n{question}\n\nRESPONSE:\n{response}"
     if reference:
-        ref_section = f"REFERENCE ANSWER (for comparison):\n{reference}\n"
-    return JUDGE_PROMPT.format(
-        query=query,
-        response=response,
-        reference_section=ref_section,
-        rubric=rubric,
-    )
-
-
-def parse_judge_response(raw: str) -> list[EvalResult]:
+        prompt += f"\n\nREFERENCE ANSWER (for checking facts):\n{reference}"
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        if start >= 0 and end > start:
-            data = json.loads(raw[start:end])
-        else:
-            return []
-
-    results = []
-    for item in data.get("evaluations", []):
-        results.append(EvalResult(
-            dimension=item["dimension"],
-            score=int(item["score"]),
-            reasoning=item.get("reasoning", ""),
-        ))
-    return results
+        value = int(_parse(judge(prompt))["score"])
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return None  # count unparseable verdicts separately; don't guess
+    return value if 1 <= value <= 4 else None
 
 
-def evaluate(
-    query: str,
-    response: str,
-    judge_fn: callable,
-    rubric: str = DEFAULT_RUBRIC,
-    reference: str | None = None,
-) -> JudgeVerdict:
-    prompt = build_judge_prompt(query, response, rubric, reference)
-    raw = judge_fn(prompt)
-    results = parse_judge_response(raw)
-    overall = sum(r.score for r in results) / max(len(results), 1)
-    return JudgeVerdict(results=results, overall_score=overall, raw_response=raw)
+def compare(judge: Judge, question: str, a: str, b: str) -> str:
+    """Returns "A", "B" or "tie". Runs both orders; disagreement means tie."""
+
+    def ask(first: str, second: str) -> str:
+        raw = judge(f"{PAIRWISE}\n\nQUESTION:\n{question}\n\nRESPONSE A:\n{first}\n\nRESPONSE B:\n{second}")
+        try:
+            return _parse(raw)["winner"]
+        except (KeyError, json.JSONDecodeError):
+            return "tie"
+
+    forward = ask(a, b)
+    backward = {"A": "B", "B": "A"}.get(ask(b, a), "tie")  # map back to original labels
+    return forward if forward == backward else "tie"
 
 
-def run_eval_suite(
-    test_cases: list[dict],
-    candidate_fn: callable,
-    judge_fn: callable,
-    threshold: float = 3.5,
-) -> dict:
-    scores = []
-    failures = []
-    for case in test_cases:
-        response = candidate_fn(case["query"])
-        verdict = evaluate(
-            query=case["query"],
-            response=response,
-            judge_fn=judge_fn,
-            reference=case.get("reference"),
-        )
-        scores.append(verdict.overall_score)
-        if verdict.overall_score < threshold:
-            failures.append({
-                "query": case["query"],
-                "score": verdict.overall_score,
-                "details": [(r.dimension, r.score, r.reasoning) for r in verdict.results],
-            })
+@dataclass
+class Agreement:
+    exact: float  # judge == human
+    within_one: float  # |judge - human| <= 1
+    unparseable: int
 
-    avg = sum(scores) / max(len(scores), 1)
-    return {
-        "average_score": avg,
-        "pass_rate": sum(1 for s in scores if s >= threshold) / max(len(scores), 1),
-        "total_cases": len(test_cases),
-        "failures": failures,
-        "passed": avg >= threshold,
-    }
+
+def agreement_with_humans(judge: Judge, labelled: list[tuple[str, str, int]]) -> Agreement:
+    """Run this before trusting the judge, and again whenever you change judge model or rubric."""
+    exact = near = bad = 0
+    for question, response, human in labelled:
+        s = score(judge, question, response)
+        if s is None:
+            bad += 1
+            continue
+        exact += s == human
+        near += abs(s - human) <= 1
+    n = len(labelled) or 1
+    return Agreement(exact / n, near / n, bad)
 ```
+<!-- /example -->
 
 ## Tool Landscape
 
-**LLM-as-Judge frameworks and platforms:**
-- OpenAI Evals — Structured eval framework with built-in LLM-as-Judge templates
-- Braintrust — Production eval platform with LLM judge scoring and drift detection
-- Langfuse — Tracing + evaluation with LLM-as-Judge scoring integration
-- DeepEval — Python framework with 14+ LLM-evaluated metrics out of the box
-- Ragas — RAG-specific evaluation framework using LLM judges for faithfulness and relevance
+| Tool | Notes |
+|---|---|
+| OpenAI Evals, Inspect (UK AISI), promptfoo | Eval harnesses with model-graded scorers |
+| Braintrust, LangSmith, Langfuse | Datasets, judge scorers and experiment tracking |
+| DeepEval, Ragas | Libraries of pre-built judge metrics (G-Eval, faithfulness, …) |
 
-**Observability platforms that support quality eval:**
-- Weights & Biases — Track evals alongside metrics and traces
-- Arize — Production monitoring with LLM-as-Judge quality scorers
-- WhyLabs — Continuous eval pipeline with quality guardrails
+## Related Patterns
+
+- [Prompt Mutation Testing](prompt-mutation-testing.md) uses judges to check that variants of a prompt stay robust.
+- [Shadow Model Evaluation](shadow-model-evaluation.md) uses pairwise judging to compare a candidate model against production.
+- [Grounding Verifier](../retrieval-and-memory/grounding-verifier.md) is a narrow judge for one property, and more reliable for that reason.
+- [Span-Level Tracing](span-level-tracing.md): attach scores to traces so a low score links to its trace.
 
 ## Further Reading
 
-1. [Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena — Zheng et al., 2023](https://arxiv.org/abs/2306.05685)
-2. [OpenAI Evals Framework — GitHub](https://github.com/openai/evals)
-3. [DeepEval Documentation](https://docs.confident-ai.com/)
-4. [The State of Evaluation for Language Models — NLLB Team, 2023](https://arxiv.org/abs/2310.16154)
-5. [Continuous Evaluation of Large Language Model Systems — Langfuse Blog, 2024](https://langfuse.com/blog/llm-evaluation)
+- [Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena](https://arxiv.org/abs/2306.05685), Zheng et al., 2023. Documents position, verbosity and self-preference bias.
+- [Who Validates the Validators?](https://arxiv.org/abs/2404.12272), Shankar et al., 2024. On aligning judges with human preferences.
+- [Creating a LLM-as-a-Judge That Drives Business Results](https://hamel.dev/blog/posts/llm-judge/), Hamel Husain

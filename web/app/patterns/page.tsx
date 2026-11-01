@@ -1,9 +1,10 @@
+import Link from 'next/link'
 import { patterns } from '@/.velite'
 import { PillarFilter } from '@/components/patterns/PillarFilter'
 
 export const metadata = {
-  title: 'Patterns | AI Engineering Patterns',
-  description: 'Browse all production AI engineering patterns grouped by pillar.',
+  title: 'All patterns',
+  description: 'Every pattern for production LLM systems, grouped by pillar, each with a runnable, tested reference implementation.',
 }
 
 export default function PatternsPage() {
@@ -14,7 +15,9 @@ export default function PatternsPage() {
     status: p.status,
     description: p.description,
     tags: p.tags,
+    order: p.sidebar?.order ?? 99,
   }))
+    .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title))
 
   return (
     <main className="min-w-0 flex-1">
@@ -23,7 +26,8 @@ export default function PatternsPage() {
           Patterns
         </h1>
         <p className="text-gray-500 dark:text-gray-400">
-          {patterns.length} production-ready patterns across {new Set(patterns.map((p) => p.pillar)).size} pillars.
+          {patterns.length} patterns across {new Set(patterns.map((p) => p.pillar)).size} pillars, each with a runnable, tested example.
+          Not sure where to start? Try the <Link href="/guides/decision-guide" className="text-[var(--accent)] hover:underline">decision guide</Link>.
         </p>
       </div>
       <PillarFilter patterns={items} />

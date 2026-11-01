@@ -2,264 +2,182 @@
 title: Effort Scaling
 pillar: cost-and-efficiency
 status: emerging
-tags: [resource-allocation, cost-optimization, dynamic-scaling, query-complexity]
+tags: [cost, agents, budgets, query-complexity]
 related:
   - Model Router
-  - Token Budget Pattern
   - Multi-Agent Orchestration
-contributors: ["@pattern-architect"]
-last_updated: "2026-07"
-description: Dynamically adjust computational resources — agent count, tool call budget, model selection — based on query complexity to avoid overinvestment on simple tasks and underinvestment on complex ones.
+  - Token Budget
+  - Loop Termination
+example: examples/cost_and_efficiency/effort_scaling.py
+contributors: ["@PrajwalAmte"]
+last_updated: "2026-11"
+description: Decide up front how much a task deserves (model, tool calls, sub-agents) and enforce it in code, so fact lookups don't get treated like research projects.
 sidebar:
-  order: 5
+  order: 4
 ---
 
 ## What It Is
 
-Effort Scaling is a resource allocation pattern that maps query complexity to appropriate computational resources before execution begins. Instead of applying uniform resources to all queries (e.g., always spawning 5 agents, always using the largest model), the system classifies incoming queries into complexity tiers and assigns tier-specific budgets for: number of agents, tool calls per agent, model selection, retrieval depth, and token allocation. This ensures simple queries complete quickly and cheaply while complex queries receive the resources needed for quality results.
+Before an agent starts, classify the task into an effort tier, such as *lookup*, *analysis* or *research*. Each tier comes with a budget: which model, how many tool calls, how many sub-agents, how long an answer. The budget is then enforced in code while the task runs, and every run logs predicted against actual effort so the tiers can be recalibrated.
+
+[Model Router](../inference-and-serving/model-router.md) picks *which model*. Effort Scaling picks *how much work*, which for agents is usually the bigger cost.
 
 ## The Problem It Solves
 
-Uniform resource allocation creates a mismatch between task complexity and cost. Without effort scaling, you face:
+Agents are bad at judging effort. Ask a capable research agent "what's our PTO policy?" and it may run twelve searches, spawn sub-agents and write 800 words. Anthropic's write-up of its multi-agent research system names this as an early failure mode: simple queries got far more agents than they needed.
 
-- **Overinvestment on simple queries** — A factual lookup like "what is the capital of France?" spawns 10 research agents, makes 50 tool calls, and burns $0.50 when a single model call costing $0.001 would have sufficed
-- **Underinvestment on complex queries** — A multi-faceted analysis requiring synthesis of 20 sources is allocated the same single-agent, 5-tool-call budget as the simple query, producing superficial results that miss critical context
-- **Cost unpredictability** — Without tiers, every query's cost is unknown until execution completes, making budgeting and rate limiting impractical
-- **Latency variance** — Simple queries take as long as complex ones because they go through the same expensive pipeline, harming user experience and throughput
+The opposite also happens. A real research question gets a three-search, one-paragraph answer because the agent decided it was done too early.
+
+Prompt instructions ("use fewer tools for simple questions") help a little. A budget the runtime enforces helps a lot.
 
 ## How It Works
 
-1. **Complexity classification** — Analyze the incoming query using heuristics (word count, question structure, entity count) and/or a lightweight classifier (small LM or ML model) to assign a complexity tier: simple, medium, complex.
+<pre class="mermaid">
+flowchart LR
+    T["Task"] --> C["Classify"]
+    C -->|"lookup"| L["small model · ≤3 tools · 0 sub-agents"]
+    C -->|"analysis"| A["medium model · ≤15 tools · ≤3 sub-agents"]
+    C -->|"research"| R["large model · ≤60 tools · ≤8 sub-agents"]
+    L & A & R --> E["Run with budget enforced<br/>(exceeding raises, agent must wrap up)"]
+    E --> G["Log: tier, used, hit ceiling?, stopped early?"]
+    G -.->|"recalibrate"| C
+</pre>
 
-2. **Tier-to-resource mapping** — Each tier maps to a predefined resource budget:
-   - **Simple:** 1 agent, 3-10 tool calls, small model, narrow retrieval
-   - **Medium:** 2-4 agents, 10-15 tool calls each, mid-size model, moderate retrieval
-   - **Complex:** 10+ agents, open-ended tool calls, frontier model, deep retrieval
-
-3. **Budget enforcement** — The execution system receives the budget as constraints. Agents are instructed to stop after N tool calls; the orchestrator spawns at most M agents; retrieval depth is capped at K sources.
-
-4. **Early termination on sufficiency** — Even within a tier, execution can terminate early if the system judges results sufficient (e.g., a "complex" query that turns out to be answerable with 3 agents stops there, not at 10).
-
-5. **Telemetry and calibration** — Log every query with: predicted tier, actual resources consumed, quality signal (user feedback, LLM-as-Judge score). Use this data to refine tier boundaries and resource allocations over time.
-
-```mermaid
-flowchart TD
-    Q([Incoming Query]) --> CLS[Complexity Classifier]
-    
-    CLS -- Simple\nFactual lookup --> S[Simple Tier\n1 agent / 3-10 calls / small model]
-    CLS -- Medium\nComparison, multi-step --> M[Medium Tier\n2-4 agents / 10-15 calls / mid model]
-    CLS -- Complex\nSynthesis, open-ended --> C[Complex Tier\n10+ agents / open calls / frontier model]
-    
-    S & M & C --> EXEC[Execute with\nBudget Constraints]
-    EXEC --> EVAL{Result\nSufficient?}
-    
-    EVAL -- Yes --> OUT([Final Answer])
-    EVAL -- No, budget remains --> EXEC
-    EVAL -- No, budget exhausted --> OUT
-    
-    OUT --> LOG[Log: tier, resources used,\nquality signal]
-    LOG --> CALIB[Calibrate tier\nboundaries over time]
-```
-
-### Example Tier Definitions
-
-| Tier | Query Characteristics | Agent Count | Tool Calls | Model | Retrieval Depth |
-|------|----------------------|-------------|------------|-------|-----------------|
-| **Simple** | Single fact, definition, calculation, well-defined entity | 1 | 3-10 | Small (Haiku, GPT-3.5) | 1-3 sources |
-| **Medium** | Comparison, multi-step reasoning, recent events, lists | 2-4 | 10-15 each | Mid (Sonnet, GPT-4o) | 5-10 sources |
-| **Complex** | Synthesis, competitive analysis, multi-domain, open-ended research | 10+ | Open (with outer limit) | Frontier (Opus, o1) | 20+ sources |
+1. **Classify cheaply.** Start with rules: comparison words, open-ended words ("research", "landscape"), number of named entities, length. Add a small classifier once you have logged data.
+2. **Map tiers to budgets.** Also tell the agent its budget in the prompt. Agents plan better when they know their limits.
+3. **Enforce in code.** When the tool-call budget runs out, the next call raises, and the agent must answer with what it has. A sub-agent cap stops fan-out.
+4. **Allow early stopping.** A budget is a ceiling, not a target.
+5. **Recalibrate from the logs.** Tasks that often hit their ceiling were classified too low. Tasks that consistently use a fraction of their budget were classified too high.
 
 ## When to Use It
 
-- Multi-agent orchestration systems where spawning agents has meaningful cost (token usage, latency, API calls)
-- Query workloads with high variance in complexity (mix of factual lookups and deep research)
-- Cost sensitivity requires optimizing spend per query, not just per model call
-- User tiers with different SLAs (free users get simple-tier budget, paid users get complex-tier)
-- You have telemetry showing that a significant fraction of queries are over- or under-resourced
+- Agentic systems where task difficulty varies widely: assistants, research tools, support agents with tools.
+- Spend per task varies a lot and isn't explained by task value.
+- You already see simple questions getting elaborate treatment.
 
 ## When NOT to Use It
 
-- **All queries are uniform complexity** — If your application handles only one query type (e.g., always summarize a 10-page document), tiering adds no value
-- **Resources are cheap and latency is critical** — If you optimize for speed above cost and can afford to throw maximum resources at every query, effort scaling adds classification overhead for no benefit
-- **Single-agent, single-call systems** — If your pipeline is a single model call with no orchestration, there are no resources to scale
-- **Complexity classification is unreliable** — If your classifier frequently misclassifies (simple queries marked complex, vice versa), effort scaling degrades both cost and quality
-- **You lack usage data** — Effort scaling requires telemetry to calibrate tier boundaries; without historical data, you're guessing at appropriate budgets
+- **Uniform tasks.** If every task is a code review of similar size, one budget is fine.
+- **Single-call features.** Without tool loops or sub-agents, [Model Router](../inference-and-serving/model-router.md) and [Token Budget](token-budget.md) cover it.
 
 ## Trade-offs
 
-1. **Cost optimization vs. classification overhead** — Effort scaling reduces wasted resources on simple queries (often 60-80% cost savings on mixed workloads), but adds a classification step at the start of each query. Classification typically costs 10-50ms and $0.0001-0.001 (lightweight classifier or heuristics). This trade-off is profitable when the cost variance between tiers is high (10×+ difference), making the classification investment worthwhile.
-
-2. **Resource efficiency vs. quality risk on underallocation** — Tight budgets on simple queries prevent waste. The risk is that a query misclassified as "simple" gets insufficient resources and produces a shallow answer. This is mitigated by: (1) conservative tier boundaries (when in doubt, upgrade to next tier), (2) early termination with sufficiency checks, (3) user feedback loops to catch underallocation. The trade-off is accepting 5-10% misclassification rate in exchange for 50-70% cost reduction on the majority of queries.
-
-3. **Predictable costs vs. flexibility within tiers** — Fixed tier budgets make cost estimation straightforward: simple queries cost $X, complex cost $Y. The trade-off is that you lose fine-grained optimization within a tier — all "complex" queries pay the same even if some could have finished earlier. Hybrid approaches (tiers set an *outer limit*, but early termination is allowed) balance predictability with efficiency.
-
-4. **Static rules vs. learned classification** — Heuristic-based classification (word count, keyword matching) is simple and interpretable but brittle. Learned classifiers (small LM fine-tuned on historical query→resource pairs) are more accurate but opaque and require ongoing training data. Static rules work well early; learned classifiers become worthwhile once you have thousands of labeled queries.
+- **Misclassification caps quality.** A research question classified as a lookup gets a shallow answer, and the user doesn't know why. Let the agent request an upgrade ("this needs more research") rather than failing silently.
+- **Rules go stale.** Phrasing shifts as the product changes. Recalibration from logs is part of the pattern, not an optional extra.
+- **Hard stops can produce awkward answers.** An agent cut off mid-plan writes a worse answer than one that knew its budget from the start. Put the budget in the prompt as well as in code.
 
 ## Failure Modes
 
-| Trigger | Symptom | Mitigation |
-|---------|---------|-----------|
-| Chronic underallocation | Users repeatedly dissatisfied with answers; quality metrics show "simple" tier underperforming | Review queries marked simple that received low quality scores; widen tier boundaries or add a "medium-simple" intermediate tier |
-| Overallocation on simple queries | Costs remain high; analysis shows most "complex" queries finish using <30% of budget | Tighten tier boundaries; add early termination signals; downgrade queries that consistently underutilize budget |
-| Classification latency | Classifier itself takes 500ms; negates latency benefit of effort scaling | Use heuristic fast path for obvious cases (e.g., <10 words → simple); run classifier async and start with conservative default; cache classifications for similar queries |
-| Tier boundary drift | Original boundaries based on 2023 models; new models shift performance curve; tiers no longer aligned | Re-calibrate tier budgets quarterly using recent telemetry; A/B test new boundaries before deploying |
-| Gaming by users | Users learn that longer queries get more resources; pad simple queries with filler text | Classify on semantic complexity (entity count, question structure), not just word count; detect and penalize obvious padding |
-| No sufficiency signal | Budget exhausted but result is still incomplete; system doesn't know whether to upgrade tier retroactively | Implement LLM-as-Judge or structured output with confidence score; on low confidence + exhausted budget, log for tier recalibration |
+**Everything is "research".** The classifier is tuned to avoid under-serving, so 60% of traffic lands in the top tier and nothing is saved. Watch the tier distribution, and check whether top-tier tasks actually use their budget.
+
+**The budget is only in the prompt.** "Use at most 5 searches" is a suggestion the model will sometimes ignore. Enforce the count in the tool-calling layer.
+
+**No feedback loop.** Tiers are set once and never revisited, while the product's traffic changes. Log predicted against actual effort and review it monthly.
 
 ## Implementation Example
 
-```python
-from anthropic import Anthropic
-from typing import Dict, Any
-import re
+A rule-based classifier, tier budgets, a `Run` object that enforces tool and sub-agent limits by raising, and a per-task record for recalibration.
 
-class EffortScaler:
-    """Classify queries and allocate resources by complexity tier."""
-    
-    def __init__(self):
-        # Define tier budgets
-        self.tiers = {
-            "simple": {
-                "agent_count": 1,
-                "tool_call_limit": 10,
-                "model": "claude-haiku-4",
-                "retrieval_depth": 3
-            },
-            "medium": {
-                "agent_count": 3,
-                "tool_call_limit": 15,
-                "model": "claude-sonnet-4",
-                "retrieval_depth": 8
-            },
-            "complex": {
-                "agent_count": 10,
-                "tool_call_limit": 50,
-                "model": "claude-opus-4",
-                "retrieval_depth": 20
-            }
-        }
-    
-    def classify_query(self, query: str) -> str:
-        """Classify query complexity using heuristics."""
-        query_lower = query.lower()
-        word_count = len(query.split())
-        
-        # Simple: short factual questions
-        if word_count < 10 and any(q in query_lower for q in ["what is", "who is", "when", "where"]):
-            return "simple"
-        
-        # Complex: synthesis, comparison, multi-step, open-ended
-        complex_indicators = [
-            "compare", "analyze", "synthesize", "comprehensive", "detailed analysis",
-            "research", "investigate", "explore in depth", "multiple perspectives"
-        ]
-        if any(ind in query_lower for ind in complex_indicators):
-            return "complex"
-        
-        # Medium: everything else or moderate length
-        return "medium"
-    
-    def get_budget(self, tier: str) -> Dict[str, Any]:
-        """Retrieve resource budget for a tier."""
-        return self.tiers.get(tier, self.tiers["medium"])
-    
-    def execute_with_budget(self, query: str, client: Anthropic) -> str:
-        """Execute query with appropriate resource allocation."""
-        # Classify
-        tier = self.classify_query(query)
-        budget = self.get_budget(tier)
-        
-        print(f"🎯 Query classified as: {tier}")
-        print(f"📊 Budget: {budget['agent_count']} agents, "
-              f"{budget['tool_call_limit']} tool calls, "
-              f"model={budget['model']}")
-        
-        # Execute with budget constraints (simplified single-agent example)
-        response = client.messages.create(
-            model=budget["model"],
-            max_tokens=2000,
-            system=f"You have a budget of {budget['tool_call_limit']} tool calls. "
-                   f"Use resources efficiently. For simple queries, answer directly without tools if possible.",
-            messages=[{"role": "user", "content": query}]
-        )
-        
-        result = response.content[0].text
-        
-        # Log for calibration (in production: send to analytics)
-        print(f"📈 Completed with tier={tier}, "
-              f"tokens={response.usage.input_tokens + response.usage.output_tokens}")
-        
-        return result
-
-
-# Usage
-client = Anthropic(api_key="your-api-key")
-scaler = EffortScaler()
-
-# Simple query: gets minimal resources
-simple = scaler.execute_with_budget(
-    "What is the capital of France?",
-    client
-)
-print(f"Simple result: {simple}\n")
-
-# Complex query: gets maximum resources
-complex_query = scaler.execute_with_budget(
-    "Compare the architectural approaches of GPT-4 and Claude 3 for long-context handling, "
-    "analyze trade-offs, and synthesize insights from academic papers and engineering blogs.",
-    client
-)
-print(f"Complex result: {complex_query[:200]}...")
-
-
-# Advanced: Learned classifier using embeddings
-class LearnedEffortScaler(EffortScaler):
-    """Effort scaler using embedding similarity to historical queries."""
-    
-    def __init__(self, client: Anthropic):
-        super().__init__()
-        self.client = client
-        # In production: load from database of (query, actual_tier) pairs
-        self.reference_queries = {
-            "simple": ["What is X?", "Who invented Y?", "When did Z happen?"],
-            "medium": ["How does X compare to Y?", "List the main types of Z"],
-            "complex": ["Analyze the impact of X on Y", "Synthesize research on Z"]
-        }
-    
-    def classify_query(self, query: str) -> str:
-        """Classify using embedding similarity to reference queries."""
-        # In production: compute embedding and find nearest neighbors in vector DB
-        # For demo, fall back to heuristic
-        return super().classify_query(query)
+```bash
+cd examples && pytest cost_and_efficiency/test_effort_scaling.py
 ```
+
+<!-- example: examples/cost_and_efficiency/effort_scaling.py -->
+```python
+"""Effort Scaling.
+
+Decide up front how much a task deserves (model, tool calls, sub-agents,
+tokens) and enforce it in code while the task runs. Log predicted vs actual
+so the tiers can be recalibrated from data instead of hunches.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class Effort:
+    tier: str
+    model: str
+    max_tool_calls: int
+    max_subagents: int
+    max_output_tokens: int
+
+
+TIERS = {
+    "lookup": Effort("lookup", "small", max_tool_calls=3, max_subagents=0, max_output_tokens=300),
+    "analysis": Effort("analysis", "medium", max_tool_calls=15, max_subagents=3, max_output_tokens=1500),
+    "research": Effort("research", "large", max_tool_calls=60, max_subagents=8, max_output_tokens=4000),
+}
+
+COMPARE = re.compile(r"\b(compare|versus|vs\.?|differences?|trade-?offs?|pros and cons)\b", re.I)
+OPEN_ENDED = re.compile(r"\b(research|landscape|survey|comprehensive|all (the )?options|deep dive|strategy)\b", re.I)
+
+
+def classify(task: str) -> Effort:
+    entities = len(re.findall(r"\b[A-Z][a-zA-Z0-9]+\b", task))
+    if OPEN_ENDED.search(task) or entities >= 5:
+        return TIERS["research"]
+    if COMPARE.search(task) or len(task.split()) > 40:
+        return TIERS["analysis"]
+    return TIERS["lookup"]
+
+
+class BudgetExhausted(Exception):
+    pass
+
+
+@dataclass
+class Run:
+    effort: Effort
+    tool_calls: int = 0
+    subagents: int = 0
+    stopped_early: bool = False
+    notes: list[str] = field(default_factory=list)
+
+    def tool(self, fn: Callable[..., str], *args) -> str:
+        if self.tool_calls >= self.effort.max_tool_calls:
+            raise BudgetExhausted(f"{self.effort.tier}: {self.effort.max_tool_calls} tool calls used")
+        self.tool_calls += 1
+        return fn(*args)
+
+    def spawn(self) -> None:
+        if self.subagents >= self.effort.max_subagents:
+            raise BudgetExhausted(f"{self.effort.tier}: no more sub-agents allowed")
+        self.subagents += 1
+
+    def record(self) -> dict:
+        """One row per task: the data you recalibrate tiers from."""
+        return {
+            "tier": self.effort.tier,
+            "tool_calls": self.tool_calls,
+            "tool_budget": self.effort.max_tool_calls,
+            "subagents": self.subagents,
+            "hit_ceiling": self.tool_calls >= self.effort.max_tool_calls,
+            "stopped_early": self.stopped_early,
+        }
+```
+<!-- /example -->
 
 ## Tool Landscape
 
-**Query routing and resource allocation:**
-- OpenAI Model Router — routes by complexity to appropriate model tier
-- Anthropic Prompt Caching — automatically caches expensive prompt prefixes
-- LangChain Routing — conditional chains based on query classification
-- LlamaIndex Query Routing — route to appropriate index or retrieval depth
+| Tool | Notes |
+|---|---|
+| Reasoning-effort parameters | `reasoning_effort` (OpenAI), extended-thinking budgets (Anthropic), thinking budgets (Gemini): effort scaling for a single call |
+| Agent SDK max-turns settings | Hard caps on agent loop iterations |
+| LangGraph recursion limit | Graph-level step cap |
 
-**Cost and resource monitoring:**
-- Helicone — track cost per query with custom tags for tiers
-- LangSmith — visualize resource usage by query type
-- Weights & Biases Weave — cost tracking with tier labels
-- Portkey — LLM gateway with cost controls and routing
+## Related Patterns
 
-**Workload classification:**
-- Cohere Classify — fine-tune classifiers for query complexity
-- OpenAI Embeddings — semantic similarity for query routing
-- Anthropic Claude for classification — use small model to classify before routing
-
-**Multi-agent orchestration (where effort scaling applies):**
-- Anthropic Research feature — explicit effort scaling with 1-10+ agent tiers
-- OpenAI Agents SDK — manager-as-tool pattern with configurable worker count
-- LangGraph — conditional edges for resource allocation based on state
+- [Model Router](../inference-and-serving/model-router.md) chooses the model. This pattern chooses the amount of work.
+- [Multi-Agent Orchestration](../inference-and-serving/multi-agent-orchestration.md) is where sub-agent caps matter most.
+- [Token Budget](token-budget.md) limits a single prompt. Effort budgets limit the whole task.
+- [Loop Termination](../loop-engineering/loop-termination.md): the iteration ceiling there should come from the effort tier.
 
 ## Further Reading
 
-1. [How we built our multi-agent research system — Anthropic Engineering Blog, June 2025](https://www.anthropic.com/engineering/multi-agent-research-system) — Effort scaling in production (1-10+ agents)
-2. [The Economics of Large Language Models — Huyen Chip, 2023](https://huyenchip.com/2023/04/11/llm-engineering.html) — Cost optimization strategies
-3. [Optimizing LLM Inference at Scale — Anyscale, 2024](https://www.anyscale.com/blog/optimizing-llm-inference) — Dynamic batching and resource allocation
-4. [Query Understanding and Intent Classification — Google Research, 2020](https://research.google/pubs/pub49268/) — Query complexity classification techniques
+- [How we built our multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system), Anthropic, 2025. See the section on scaling effort to query complexity.
+- [Scaling LLM Test-Time Compute Optimally can be More Effective than Scaling Model Parameters](https://arxiv.org/abs/2408.03314), Snell et al., 2024

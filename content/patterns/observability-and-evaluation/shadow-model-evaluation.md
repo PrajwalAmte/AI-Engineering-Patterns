@@ -2,249 +2,211 @@
 title: Shadow Model Evaluation
 pillar: observability-and-evaluation
 status: emerging
-tags: [evaluation, shadow-traffic, model-comparison, deployment, quality]
+tags: [evaluation, shadow-traffic, model-comparison, deployment]
 related:
   - LLM-as-Judge
-  - Span-Level Tracing
   - Prompt Canary Deployment
+  - LLM Gateway
   - Model Router
+example: examples/observability_and_evaluation/shadow_model_evaluation.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-07"
-description: Route production traffic to a shadow model in parallel, comparing outputs without serving them to users to safely validate new models before any real-user exposure.
+last_updated: "2026-11"
+description: Send a sample of real traffic to a candidate model in the background with tools disabled, judge it against production, and promote only on a clear, significant win.
 sidebar:
   order: 5
 ---
 
 ## What It Is
 
-Shadow Model Evaluation duplicates live production requests to a candidate model running in parallel, collects both the production response (served to users) and the shadow response (never shown), then automatically compares them. This gives you a continuous, real-traffic quality comparison between the current production model and any candidate—new model version, fine-tuned variant, or prompt change—without any user-facing risk. It is the LLM equivalent of shadow mode traffic in distributed systems.
+Shadow traffic for models. Production keeps serving users. For a sample of requests, the same input also goes to a candidate model in the background. The candidate's answer is never shown to anyone, and any tools that could have side effects are disabled for it. A judge compares each pair, and the candidate is promoted only when it wins by a margin that is unlikely to be noise.
+
+Shadowing is long-standing practice for backend services. The LLM-specific parts are judging open-ended pairs and keeping a candidate *agent* from acting on the world.
 
 ## The Problem It Solves
 
-Validating a new model or prompt against real production traffic is the hardest problem in LLM deployment:
+Offline evals and benchmarks don't look like your traffic. A new model that wins on your 200-case test set can still lose on the long tail of real questions: odd formats, other languages, very long pasted inputs. A canary rollout finds that out by showing a worse model to real users.
 
-- **Benchmark divergence**: Offline benchmarks (MMLU, HumanEval) do not reflect your actual query distribution. A model that scores 5% better on benchmarks can perform worse on your specific workload.
-- **Canary risk**: Even a 1% canary rollout exposes real users to regressions before you have measured the full impact.
-- **Sample bias in staging**: Manually constructed test sets do not capture the long tail of production queries—the edge cases that expose model weaknesses.
-- **Latency unknowns**: A new model may be slower at your actual request rate even if it is faster in isolation.
-
-Shadow evaluation gives you real query distribution, zero user exposure, and continuous quality metrics before any traffic decision.
+Shadowing gets you real traffic with zero user exposure. It costs extra inference, and it can't measure anything that depends on users reacting to the answer.
 
 ## How It Works
 
 <pre class="mermaid">
 sequenceDiagram
-    participant User
-    participant Gateway
-    participant Production as Production Model
-    participant Shadow as Shadow Model
-    participant Evaluator as Async Evaluator
-    participant Dashboard
-
-    User->>Gateway: Request
-    Gateway->>Production: Forward request
-    Gateway-->>Shadow: Duplicate request (async)
-    Production-->>Gateway: Response (served)
-    Gateway-->>User: Return production response
-    Shadow-->>Evaluator: Shadow response (not served)
-    Production-->>Evaluator: Production response copy
-    Evaluator->>Evaluator: LLM-as-Judge comparison
-    Evaluator->>Dashboard: win/loss/tie + latency delta
+    participant U as User
+    participant G as Gateway
+    participant P as Production model
+    participant Q as Shadow queue (bounded)
+    participant C as Candidate (tools off)
+    participant J as Judge
+    U->>G: request
+    G->>P: request
+    P-->>G: answer
+    G-->>U: answer (always production)
+    G--)Q: sampled (prompt, prod answer)
+    Q--)C: prompt
+    C--)J: candidate answer
+    J--)J: prod vs candidate → cand / prod / tie
 </pre>
 
-1. **Request duplication**: LLM gateway intercepts each production request and fires an identical asynchronous request to the shadow model. This must not block the production response path.
-2. **Serve production only**: Return the production model response to the user. The shadow response is never shown.
-3. **Async collection**: Shadow response and production response are written to an evaluation queue (message bus or database).
-4. **Automated comparison**: An asynchronous evaluator runs LLM-as-Judge comparisons on each (production, shadow) pair: shadow win / production win / tie, using a task-specific rubric.
-5. **Aggregate metrics**: Compute shadow win rate, latency percentiles (p50, p95), cost per request, and quality scores by query category.
-6. **Traffic decision**: If shadow win rate exceeds threshold (e.g., 55% after N requests) with statistical significance, promote shadow to production. Otherwise, reject.
-
-**Critical constraint**: Shadow requests must be isolated. They must not affect production state, must not be visible in production logs as user traffic, and must not trigger downstream side effects (emails, writes, external API calls).
+1. **Sample** a fraction of requests (10–20% is common) into a *bounded* queue. When it's full, drop shadow work. Never slow production to keep up.
+2. **Run the candidate with side effects off.** Tools that write, send or charge are disabled or mocked. Enforce this in code, not in the prompt.
+3. **Judge each pair** with a pairwise judge run in both orders ([LLM-as-Judge](llm-as-judge.md)). Record shadow errors separately. They're part of the result.
+4. **Decide on statistics, not vibes.** Promote only when a pessimistic estimate of the candidate's win rate (for example, the Wilson lower bound) is above 50% over enough decided comparisons. Reject when the optimistic estimate is below 50%. Otherwise the models are equivalent, so choose on cost and latency.
+5. **Slice the results** by feature or query type before promoting. A candidate can win overall and lose badly on one segment.
 
 ## When to Use It
 
-- Before any model upgrade or version change in a user-facing system
-- Evaluating fine-tuned models against the base model on real workload
-- Comparing prompt variants at scale without A/B test user risk
-- Continuous model monitoring: run shadow evaluation permanently to detect provider regressions
-- When your query distribution is too varied to cover with a manual test set
+- Model upgrades, provider switches, fine-tuned replacements and major prompt rewrites in user-facing systems.
+- Enough traffic to accumulate a few hundred decided comparisons in reasonable time.
+- When you want a "no regressions on real traffic" check before a canary.
 
 ## When NOT to Use It
 
-- Low-traffic systems (fewer than 100 requests/day) where shadow data accumulates too slowly for statistical significance
-- Requests with side effects that cannot be isolated (tool calls that write to databases, send emails)
-- Real-time streaming responses where duplicating the connection is architecturally complex
-- When shadow model cost is prohibitive at production scale (shadow adds approximately 100% inference cost)
-- Requests containing sensitive user data that must not be transmitted to a different model endpoint
+- **Requests whose value is the side effect.** If the agent's job is to file the ticket, a tools-off shadow can't show whether it would have filed it correctly. Use a sandboxed environment with recorded tool responses instead.
+- **Very low traffic.** You'd wait weeks for significance. Use a curated offline set and a careful canary.
+- **Data that can't go to the candidate's endpoint,** such as a different provider or region with different data terms.
 
 ## Trade-offs
 
-1. **Inference cost doubles** — Every production request generates one shadow request. If your production LLM costs $1,000/month, shadow evaluation adds $1,000/month minimum. Use request sampling (e.g., shadow 20% of traffic) to reduce cost at the expense of slower signal accumulation.
-
-2. **Shadow queue backpressure** — Production path is unaffected since shadow is async. However, if the shadow model is significantly slower, the evaluation queue backs up. Use a bounded queue with backpressure to prevent memory exhaustion.
-
-3. **Judge quality determines decision quality** — The LLM-as-Judge comparison drives your promotion decision. A miscalibrated judge (one that favors longer responses or newer phrasing styles) produces misleading win rates. Validate judge agreement with human labels on a sample before trusting automated decisions.
-
-4. **Statistical significance requires patience** — At 20% shadow rate, getting 1,000 evaluated pairs requires 5,000 production requests. For low-traffic systems, shadow evaluation takes days to weeks to produce actionable signal.
+- **Cost.** You pay for the candidate *and* the judge on every sampled request. Sampling is the dial.
+- **Users never see the candidate.** Follow-up questions, satisfaction and task completion can't be measured in shadow. Shadowing de-risks a canary. It doesn't replace one.
+- **The judge decides.** A judge biased toward longer answers will promote the more verbose model. Calibrate it first.
 
 ## Failure Modes
 
-### Side Effect Leakage
-**Trigger**: Shadow request triggers a real tool call (web search, database write, email send) that affects the production system or external services.
-**Symptom**: Duplicate emails sent to users, corrupted database state, unexpected API charges from tool executions.
-**Mitigation**: Shadow requests must run in a sandboxed context: mock all tool implementations to no-ops, route to read-only database replicas, disable webhook callbacks. Enforce sandbox via middleware, not trust in the caller.
+**Side effects leak.** The candidate agent sends a real email or writes to a production table. Disabling tools has to be structural: give the shadow path no credentials, read-only replicas and stubbed tools.
 
-### Queue Backlog Under Shadow Model Latency
-**Trigger**: Shadow model is 3x slower than production. Shadow responses pile up in the evaluation queue faster than the evaluator processes them.
-**Symptom**: Evaluation queue grows unbounded, consuming memory. Old shadow results eventually dropped or evaluated hours after the production request, making latency comparison meaningless.
-**Mitigation**: Set maximum queue depth with a circuit breaker: if queue exceeds N items, drop new shadow requests until queue drains. Add queue depth as a monitoring metric with alert threshold.
+**The shadow slows production.** The shadow call is made inline "just for now", and p95 doubles. Make it asynchronous with a bounded queue and load-shedding, as the example does.
 
-### Judge Preference Drift
-**Trigger**: LLM-as-Judge has a systematic bias favoring responses with more structured formatting (bullet points, headers) regardless of accuracy. Shadow model uses more formatting.
-**Symptom**: Shadow model wins 65% of comparisons even though human raters prefer production model 60% of the time.
-**Mitigation**: Regularly validate judge scores against human-labeled pairs. Use multiple judges with different models and take majority vote. Include accuracy-focused rubric criteria, not just fluency.
-
-### Sampling Bias in Shadow Selection
-**Trigger**: Shadow traffic is sampled by filtering to only "interesting" queries (e.g., those containing certain keywords). The sample is not representative.
-**Symptom**: Shadow model performs well on sampled queries but regresses on unsampled query types. Promotion decision is based on biased data.
-**Mitigation**: Use uniform random sampling. If stratified sampling is needed for cost reasons, ensure all query categories are represented proportionally.
+**Declaring a winner too early.** The candidate is up 60–40 after 100 comparisons, and someone promotes it. Set the minimum sample size and the decision rule before looking at the results.
 
 ## Implementation Example
 
+A production path that can't be affected by the shadow, sampling into a bounded queue with load-shedding, tools disabled for the candidate, error counting, and a promote / reject / no-difference decision based on Wilson bounds. The tests cover each guarantee, including a candidate that crashes on every call.
+
+```bash
+cd examples && pytest observability_and_evaluation/test_shadow_model_evaluation.py
+```
+
+<!-- example: examples/observability_and_evaluation/shadow_model_evaluation.py -->
 ```python
-import asyncio
-import uuid
-import json
-from dataclasses import dataclass
-from typing import Optional, Callable
+"""Shadow Model Evaluation.
+
+Serve production as usual. For a sample of requests, also send the request to
+a candidate model in the background with side-effecting tools disabled, then
+have a judge compare the two answers. The candidate is promoted only when it
+wins clearly over enough comparisons, not after the first good afternoon.
+"""
+
+from __future__ import annotations
+
+import math
+import queue
+import random
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+Model = Callable[[str, bool], str]  # (prompt, tools_enabled) -> answer
+PairJudge = Callable[[str, str, str], str]  # (prompt, production, candidate) -> "prod" | "cand" | "tie"
+
 
 @dataclass
-class ShadowEvaluationRecord:
-    request_id: str
-    user_query: str
-    production_response: str
-    shadow_response: str
-    production_latency_ms: float
-    shadow_latency_ms: float
-    judge_verdict: Optional[str] = None  # "production_wins" | "shadow_wins" | "tie"
-    judge_reasoning: Optional[str] = None
+class Tally:
+    cand: int = 0
+    prod: int = 0
+    tie: int = 0
+    errors: int = 0
 
-class ShadowModelEvaluator:
-    """
-    Routes requests to production model and optionally shadows to candidate model.
-    All shadow activity is async and never blocks production.
-    """
+    @property
+    def decided(self) -> int:
+        return self.cand + self.prod
 
-    def __init__(
-        self,
-        production_model: str,
-        shadow_model: str,
-        shadow_rate: float = 0.2,
-        judge_model: str = "gpt-4o-mini"
-    ):
-        self.production_model = production_model
-        self.shadow_model = shadow_model
-        self.shadow_rate = shadow_rate
-        self.judge_model = judge_model
-        self.evaluation_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
-    async def complete(self, query: str, llm_call: Callable, **kwargs) -> str:
-        import random, time
+def wilson_lower_bound(wins: int, n: int, z: float = 1.96) -> float:
+    """Pessimistic estimate of the true win rate (95% by default)."""
+    if n == 0:
+        return 0.0
+    p = wins / n
+    denom = 1 + z * z / n
+    centre = p + z * z / (2 * n)
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return (centre - margin) / denom
 
-        request_id = str(uuid.uuid4())
-        prod_start = time.monotonic()
-        production_response = await llm_call(
-            model=self.production_model, prompt=query, **kwargs
-        )
-        prod_latency = (time.monotonic() - prod_start) * 1000
 
-        if random.random() < self.shadow_rate:
-            asyncio.create_task(
-                self._shadow_and_enqueue(
-                    request_id, query, production_response, prod_latency, llm_call, **kwargs
-                )
-            )
+@dataclass
+class ShadowEvaluator:
+    production: Model
+    candidate: Model
+    judge: PairJudge
+    sample_rate: float = 0.2
+    max_queue: int = 1000
+    rng: random.Random = field(default_factory=random.Random)
+    tally: Tally = field(default_factory=Tally)
+    dropped: int = 0
 
-        return production_response
+    def __post_init__(self):
+        self._queue: queue.Queue = queue.Queue(maxsize=self.max_queue)
+        self._lock = threading.Lock()
 
-    async def _shadow_and_enqueue(
-        self, request_id, query, production_response, prod_latency, llm_call, **kwargs
-    ):
-        import time
-        try:
-            shadow_start = time.monotonic()
-            shadow_response = await llm_call(
-                model=self.shadow_model, prompt=query, **kwargs
-            )
-            shadow_latency = (time.monotonic() - shadow_start) * 1000
-
-            record = ShadowEvaluationRecord(
-                request_id=request_id,
-                user_query=query,
-                production_response=production_response,
-                shadow_response=shadow_response,
-                production_latency_ms=prod_latency,
-                shadow_latency_ms=shadow_latency
-            )
-
-            if not self.evaluation_queue.full():
-                await self.evaluation_queue.put(record)
-        except Exception:
-            pass  # Never let shadow failure affect production
-
-    async def run_evaluator(self, llm_call: Callable) -> None:
-        """Background task: drain queue and run LLM-as-Judge comparisons"""
-        while True:
-            record: ShadowEvaluationRecord = await self.evaluation_queue.get()
-
-            judge_prompt = f"""You are evaluating two AI responses to the same query.
-
-Query: {record.user_query}
-
-Response A (Production): {record.production_response}
-
-Response B (Shadow/Candidate): {record.shadow_response}
-
-Which response is better? Consider accuracy, completeness, clarity, and helpfulness.
-Respond with JSON only:
-{{"verdict": "production_wins or shadow_wins or tie", "reasoning": "one sentence"}}"""
-
+    def handle(self, prompt: str) -> str:
+        """The production path. Nothing the shadow does can slow or break it."""
+        answer = self.production(prompt, True)
+        if self.rng.random() < self.sample_rate:
             try:
-                result = await llm_call(model=self.judge_model, prompt=judge_prompt)
-                parsed = json.loads(result)
-                record.judge_verdict = parsed["verdict"]
-                record.judge_reasoning = parsed["reasoning"]
+                self._queue.put_nowait((prompt, answer))
+            except queue.Full:
+                self.dropped += 1  # shed shadow work, never production work
+        return answer
 
-                print(
-                    f"shadow_eval | id={record.request_id} verdict={record.judge_verdict} "
-                    f"prod={record.production_latency_ms:.0f}ms "
-                    f"shadow={record.shadow_latency_ms:.0f}ms"
-                )
+    def drain(self) -> None:
+        """Run by a background worker; called directly in tests."""
+        while True:
+            try:
+                prompt, prod_answer = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                cand_answer = self.candidate(prompt, False)  # tools off: no emails, no writes
+                verdict = self.judge(prompt, prod_answer, cand_answer)
             except Exception:
-                pass
+                with self._lock:
+                    self.tally.errors += 1
+                continue
+            with self._lock:
+                setattr(self.tally, verdict, getattr(self.tally, verdict) + 1)
+
+    def decision(self, min_decided: int = 200, promote_above: float = 0.5) -> str:
+        t = self.tally
+        if t.decided < min_decided:
+            return f"keep shadowing ({t.decided}/{min_decided} decided comparisons)"
+        lower = wilson_lower_bound(t.cand, t.decided)
+        upper = 1 - wilson_lower_bound(t.prod, t.decided)
+        if lower > promote_above:
+            return f"promote: candidate wins {t.cand}/{t.decided}, lower bound {lower:.2f}"
+        if upper < promote_above:
+            return f"reject: candidate wins {t.cand}/{t.decided}, upper bound {upper:.2f}"
+        return "no clear difference: decide on cost and latency"
 ```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|------|------|-------|
-| LiteLLM | Open-source proxy | Supports fallback routing; can be extended for shadow duplication |
-| Langfuse | Open-source observability | Can log both production and shadow traces for comparison |
-| Braintrust | Managed evaluation | Supports A/B evaluation and model comparison pipelines |
-| Portkey | Managed gateway | Gateway-level traffic duplication and response logging |
-| Kafka / SQS | Message bus | Use as evaluation queue for high-volume shadow traffic |
-| Custom implementation | DIY | Required for full control over sandbox isolation and evaluation rubric |
+| Tool | Notes |
+|---|---|
+| Your LLM gateway (LiteLLM, Portkey, Kong, …) | Mirror or duplicate requests; often the simplest place to add shadowing |
+| Istio / Envoy traffic mirroring | Mirror at the mesh layer for self-hosted models |
+| Braintrust, LangSmith, Langfuse | Store pairs and run pairwise judges as experiments |
+| Seldon Core, KServe | Shadow deployments for self-hosted model servers |
 
 ## Related Patterns
 
-- **[LLM-as-Judge](llm-as-judge.md)** — Shadow Model Evaluation uses LLM-as-Judge as its core comparison mechanism; judge quality determines the reliability of every promotion decision.
-- **[Prompt Canary Deployment](../governance/prompt-canary-deployment.md)** — Shadow evaluation precedes canary: validate silently first, then expose a small fraction of real users.
-- **[Model Router](../inference-and-serving/model-router.md)** — Once shadow evaluation produces a promotion decision, the model router executes the traffic shift.
-- **[Span-Level Tracing](span-level-tracing.md)** — Trace both production and shadow requests end-to-end; compare not just response quality but latency breakdown by component.
+- [LLM-as-Judge](llm-as-judge.md) supplies the pairwise verdicts this pattern relies on.
+- [Prompt Canary Deployment](../governance/prompt-canary-deployment.md) is the next step: a small share of real users, after shadowing passes.
+- [LLM Gateway](../inference-and-serving/llm-gateway.md) is where duplication and sampling naturally live.
+- [Model Router](../inference-and-serving/model-router.md): shadow a cheaper model on one tier to see whether you can move that tier down.
 
 ## Further Reading
 
-- [The Tail at Scale — Dean and Barroso, Google](https://research.google/pubs/pub40801/) — Origins of shadow traffic in distributed systems
-- [Designing Machine Learning Systems — Chip Huyen](https://www.oreilly.com/library/view/designing-machine-learning/9781098107956/) — Chapter on evaluation and model deployment strategies
-- [Continuous Delivery for Machine Learning (CD4ML)](https://martinfowler.com/articles/cd4ml.html) — Shadow testing as a deployment strategy for ML models
-- [Braintrust: LLM Evaluation Platform](https://www.braintrust.dev/docs) — Practical tooling for production model comparison
+- [Istio traffic mirroring](https://istio.io/latest/docs/tasks/traffic-management/mirroring/)
+- [Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena](https://arxiv.org/abs/2306.05685), Zheng et al., 2023. On pairwise judgments and their biases.

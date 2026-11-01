@@ -1,63 +1,55 @@
 ---
 title: Getting Started
-description: How to use AI Engineering Patterns and find the right patterns for your system.
+description: What this library is, how a pattern page is laid out, and how to run any pattern's code in under a minute.
 ---
 
-AI Engineering Patterns is a structured pattern library for engineers building AI systems in production. It is not an awesome list of links, not vendor documentation, and not a research paper collection. It is a curated set of named patterns with descriptions, trade-offs, when-to-use guides, and code examples for every layer of a production AI system.
+AI Engineering Patterns is a catalog of the techniques teams use to put LLM features into production and keep them there: caching, routing, guardrails, evals, agent loops and more. Each pattern explains the problem, the mechanism, when *not* to use it, and how it fails, and each one comes with a **runnable, tested reference implementation**.
 
-## How to Use This Resource
+## Run any pattern in under a minute
 
-### If you know what you are looking for
+All examples are plain Python 3.10+ with no dependencies beyond `pytest`. They use deterministic fake models, so you don't need an API key.
 
-Browse the sidebar. Patterns are organized into 8 pillars. Each pillar covers a distinct layer of a production AI system.
+```bash
+git clone https://github.com/PrajwalAmte/AI-Engineering-Patterns
+cd AI-Engineering-Patterns/examples
+pip install pytest
+pytest                                         # all patterns
+pytest reliability/test_circuit_breaker.py     # just one
+```
 
-### If you are not sure where to start
+The code on each pattern page is copied from these files by a script, and CI fails if the two drift apart. The code you read is the code that was tested.
 
-Use the [Decision Guide](/AI-Engineering-Patterns/guides/decision-guide/) to answer a few questions about your system and get recommended patterns.
+To use a pattern with a real model, pass your client where the example takes `llm` or `embed`. Every example takes plain callables for this reason.
 
-### If you want to understand the landscape
+## Find the pattern you need
 
-Read through the pillars in order. They roughly follow the lifecycle of a request through a production AI system:
+- **You have a specific problem** ("our bill is too high", "RAG answers are wrong", "the agent never stops"): start with the [Decision Guide](decision-guide.md).
+- **You want to browse:** patterns are grouped into ten pillars on the [patterns page](/patterns/). The [pattern graph](/graph/) shows how they connect.
+- **You want to see patterns working together:** the [case studies](/case-studies/) show how several patterns combine in real products.
 
-1. **Inference & Serving** — How requests reach models and how responses come back.
-2. **Data Patterns for AI** — The data foundation every AI system depends on.
-3. **Reliability & Resilience** — Keeping AI systems working when things go wrong.
-4. **Retrieval & Memory** — What knowledge AI systems can access and remember.
-5. **Observability & Monitoring** — Seeing what your AI system is actually doing.
-6. **Security & Trust** — Guardrails, PII handling, and prompt injection defenses.
-7. **Cost & Efficiency** — Running AI systems without unbounded spend.
-8. **Governance & Compliance** — Lineage, model cards, and compliance operations.
-9. **Graph Patterns** — Knowledge graphs, graph-based reasoning, and entity resolution.
-10. **Evaluation & Testing** — LLM-as-Judge, eval pipelines, and regression testing.
+## How a pattern page is organized
 
-## Reading a Pattern
-
-Every pattern follows the same structure:
-
-| Section | Purpose |
+| Section | What you get |
 |---|---|
-| What It Is | One paragraph plain-language description |
-| The Problem It Solves | What breaks without this pattern |
-| How It Works | Step-by-step mechanism with diagrams |
-| When to Use It | Specific conditions and workload types |
-| When not to Use It | Explicit anti-use-cases |
-| Trade-offs | 2-4 honest trade-offs |
-| Failure Modes | What breaks when the pattern is deployed correctly — trigger, symptom, mitigation |
-| Implementation Example | Minimal working code snippet |
-| Tool Landscape | Tools that implement or support the pattern |
-| Related Patterns | Links to adjacent patterns |
-| Further Reading | 2-4 high-quality external references |
+| What It Is | The idea in a paragraph, and where it came from if it isn't new |
+| The Problem It Solves | A concrete scenario of what goes wrong without it |
+| How It Works | A diagram and the steps |
+| When to Use It | The conditions where it pays off |
+| **When NOT to Use It** | The cases where it's the wrong tool. Read this first. |
+| Trade-offs | What it costs you |
+| Failure Modes | How it breaks *even when implemented correctly* |
+| Implementation Example | The tested reference code, plus the command to run its tests |
+| Tool Landscape | Products and libraries that implement it |
+| Related Patterns / Further Reading | Where to go next, with primary sources |
 
-The **When not to Use It** section is the most important. It is what makes this resource opinionated rather than encyclopedic.
+## Status labels
 
-## Pattern Maturity
+- **Validated in production:** widely used by many teams, and the trade-offs are well understood.
+- **Emerging:** used by early adopters. The idea is sound, but expect best practice to change.
+- **Proposed:** a promising idea without much production evidence yet.
 
-Each pattern has a status indicating its maturity level:
-
-- **Proposed** — Pattern identified, not yet validated in production systems.
-- **Emerging** — Used by early adopters, trade-offs still being understood.
-- **Validated in Production** — Widely used by multiple teams, trade-offs well understood.
+Some pattern names are established terms (Circuit Breaker, LLM-as-Judge). Others are names we use for a technique that teams practice without a common name (Retrieval Freshness Watermark, Tool Output Firewall). The page says which.
 
 ## Contributing
 
-This is an open-source project. If you have used a pattern in production and want to share it, or if you see something that needs correction, see the [Contributing Guide](https://github.com/PrajwalAmte/AI-Engineering-Patterns/blob/main/CONTRIBUTING.md).
+Corrections, production stories and new patterns are welcome. A new pattern needs a runnable example with tests. See the [Contributing Guide](../../CONTRIBUTING.md).

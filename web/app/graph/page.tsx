@@ -1,7 +1,7 @@
 import { PatternGraph } from '@/components/graph/PatternGraph'
 
 export const metadata = {
-  title: 'Pattern Graph | AI Engineering Patterns',
+  title: 'Pattern Graph',
   description: 'Interactive force-directed graph of all AI engineering patterns and their relationships.',
 }
 

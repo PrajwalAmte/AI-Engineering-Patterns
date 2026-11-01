@@ -17,7 +17,7 @@ description: Key terms used throughout AI Engineering Patterns.
 
 **Canary Deployment** — Releasing a new model or prompt version to a small subset of traffic before full rollout. Limits blast radius of quality regressions.
 
-**Cascading Context Assembly** — A pattern that dynamically assembles context from multiple tiers (cache, metadata, vector store, live retrieval) in order of increasing cost and latency. Stops as soon as a confidence threshold is met, avoiding unnecessary expensive retrievals.
+**Cascading Context Assembly** — Answering with a small amount of retrieved context first and retrieving more only when the model reports, with an exact sentinel, that it can't answer from what it has.
 
 **Chain-of-Thought (CoT)** — Prompting strategy that asks the model to show intermediate reasoning steps. Improves accuracy on complex tasks at the cost of additional output tokens.
 

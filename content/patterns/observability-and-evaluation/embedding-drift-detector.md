@@ -7,217 +7,187 @@ related:
   - Span-Level Tracing
   - Hybrid Search
   - Data Contract
-  - Semantic Caching
+  - Semantic Deduplication
+example: examples/observability_and_evaluation/embedding_drift_detector.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-07"
-description: Monitor embedding distribution shifts over time to detect silent RAG degradation before it surfaces as bad answers.
+last_updated: "2026-11"
+description: Watch two numbers on live queries, where the average query has moved and how well the index still matches them, to catch RAG degradation before users do.
 sidebar:
   order: 3
 ---
 
 ## What It Is
 
-An embedding drift detector continuously monitors the statistical distribution of query embeddings and document embeddings in your RAG system. When the distribution of production queries drifts significantly from the distribution the index was built for — or when a model update silently changes the embedding space — the detector fires an alert before answer quality degrades visibly.
+A monitor over the embeddings of production queries. It tracks two numbers on a rolling window and compares them with a baseline:
+
+- **Centroid shift:** how far the average query vector has moved. In other words, are people asking about different things than before?
+- **Alignment:** the mean similarity between each query and its best-matching document. In other words, is the index still able to answer what people ask?
+
+The first number is context. The second predicts bad answers, so it gets the tighter alert.
 
 ## The Problem It Solves
 
-RAG systems are built on an implicit contract: the embedding model maps queries and documents into a shared vector space where proximity equals relevance. This contract breaks silently in several ways:
+RAG fails quietly. Retrieval always returns *something*, and the model always writes fluent text from it. Consider what happens when:
 
-- **Query distribution shift**: Users start asking questions about topics that were poorly represented in the original corpus. Retrieval quality drops but no error is thrown — the system returns the "closest" chunks, which are now irrelevant.
-- **Embedding model updates**: The embedding provider ships a new model version. Existing index vectors were computed with the old model. Queries embedded with the new model land in different regions of the space. Cosine similarity scores degrade across the board.
-- **Index staleness**: New documents are indexed incrementally, but the overall distribution of the index no longer reflects the corpus. Clusters become unbalanced.
-- **Dimensionality collapse**: Under certain fine-tuning regimes or model updates, embeddings lose variance in key dimensions, reducing the effective discriminative power of the space.
+- A new feature launches and users ask about webhooks, which the docs index doesn't cover yet.
+- The embedding provider updates the model behind an alias, and new query vectors no longer line up with last month's document vectors.
+- A content migration drops a whole section of the knowledge base.
 
-In all cases, retrieval recall degrades silently. The LLM still produces fluent answers — just wrong ones, grounded in irrelevant context. Without embedding-level monitoring, the first signal is user complaints.
+In each case answers get worse, and the first alert you get is a user complaint. Embedding-level signals show up hours or days earlier.
 
 ## How It Works
 
-```mermaid
-flowchart TD
-    A["Production queries"] --> B["Compute query embeddings"]
-    B --> C["Store in rolling window"]
-    C --> D["Compute distribution statistics"]
-    D --> E{"Compare against baseline"}
-    E -->|"Drift below threshold"| F["No action"]
-    E -->|"Drift exceeds threshold"| G["Alert: embedding drift detected"]
-    G --> H["Trigger re-indexing or model audit"]
-    I["Periodic index sampling"] --> J["Compute index distribution stats"]
-    J --> E
-```
+<pre class="mermaid">
+flowchart LR
+    B["Baseline: queries from a known-good week<br/>→ centroid + mean best-match similarity"] --> C
+    Q["Live queries"] --> W["Rolling window (e.g. last 500)"]
+    W --> C{"Compare"}
+    C -->|"alignment dropped > X"| A1["Alert: index can't answer<br/>what users ask"]
+    C -->|"centroid moved > Y"| A2["Notice: topic mix changed"]
+    C -->|"too few samples"| N["No verdict"]
+</pre>
 
-1. **Baseline capture**: At indexing time, compute aggregate statistics over the embedding space — centroid, variance per dimension, inter-cluster distances, and a sample of pairwise cosine similarities.
-2. **Rolling query window**: Maintain a rolling window of recent query embeddings (last N queries or last T hours).
-3. **Distribution comparison**: Periodically compare the query window distribution against the index baseline using statistical distance metrics (Wasserstein distance, KL divergence on projected distributions, or centroid drift magnitude).
-4. **Alignment check**: Compute the average cosine similarity between recent query embeddings and their top-k retrieved document embeddings. A decline in this metric indicates the query-document alignment is degrading.
-5. **Alert and action**: When drift exceeds the configured threshold, fire an alert. Depending on severity, trigger a re-indexing job, flag the embedding model for review, or activate a fallback retrieval strategy.
+1. **Baseline.** Embed queries from a period when quality was good. Store their centroid and their mean best-match similarity against a sample of the index.
+2. **Window.** Keep embeddings of recent queries. If you already embed queries for retrieval, this costs almost nothing.
+3. **Compare** on a schedule. Don't produce a verdict below a minimum sample size. Small windows are noise.
+4. **Route the alerts differently.** An alignment drop goes to whoever owns content and retrieval: there's a coverage gap or a model mismatch. A centroid shift with stable alignment is usually fine. Users moved, and the index kept up.
 
 ## When to Use It
 
-- Your RAG system serves production traffic where retrieval quality directly impacts user experience.
-- You use a third-party embedding model that may be updated without notice (OpenAI, Cohere, Voyage).
-- Your corpus grows incrementally and the query distribution evolves over time.
-- You have experienced silent RAG quality degradation that was only caught by user complaints or spot checks.
+- Production RAG where retrieval quality directly affects users.
+- A hosted embedding model whose version you don't fully control.
+- A corpus or a user base that changes month to month.
 
 ## When NOT to Use It
 
-- Your embedding model is pinned, self-hosted, and never changes. The index-query alignment is stable by construction. Distribution monitoring adds cost without catching real issues.
-- The corpus is small and static (e.g., a fixed FAQ set). Manual quality checks are sufficient and cheaper than automated monitoring infrastructure.
-- You already run end-to-end eval suites on every retrieval pipeline change. If evaluation catches quality regressions before they reach production, embedding-level monitoring is redundant.
+- **A pinned, self-hosted embedding model over a small, static corpus.** There's little that can drift, so periodic eval runs are enough.
+- **You already run retrieval evals on live samples** (judged relevance of the top results). That measures the outcome directly, and this pattern is a cheaper proxy for it.
 
 ## Trade-offs
 
-1. **Statistical noise** — Embedding distributions are high-dimensional. Meaningful drift detection requires dimensionality reduction (PCA, random projection) that can obscure real shifts or flag noise as drift. Threshold tuning is non-trivial.
-2. **Baseline rot** — The baseline itself becomes stale. If query patterns evolve legitimately, the baseline must be updated — but updating too aggressively masks real drift. Requires a policy for baseline refresh.
-3. **Compute overhead** — Storing and computing statistics over embedding windows adds storage and CPU cost. For high-throughput systems, sampling is necessary, which introduces its own accuracy trade-off.
-4. **Action gap** — The detector tells you something drifted, not what to do about it. Re-indexing is expensive and may not be the right fix if the drift is on the query side. Requires runbooks for each drift scenario.
+- **Proxy, not truth.** Alignment can drop because users ask harder questions that are still answerable. Confirm with a judged sample before re-indexing.
+- **Baseline policy.** Re-baseline too often and you normalize real degradation. Too rarely and seasonal shifts keep paging you. Re-baseline deliberately, after confirming quality.
+- **The sample of the index matters.** Comparing against a few thousand random document vectors is cheap and good enough, but refresh the sample when the corpus changes a lot.
 
 ## Failure Modes
 
-| Trigger | Symptom | Mitigation |
-|---------|---------|-----------|
-| Seasonal query shifts (holiday, tax season) | Detector fires on legitimate distribution changes; alert fatigue | Maintain multiple baselines (30-day and 365-day rolling); only alert on deviation from both |
-| PCA/projection discards drift dimensions | Real drift in full space but detector silent after projection | Monitor retrieval quality alongside statistics; revisit projection strategy; test detector on known drift |
-| Baseline never refreshed; corpus evolves | Detector permanently reports drift on stale baseline vs. new reality | Implement scheduled baseline refresh with quality confirmation step before committing |
+**Seasonal false alarms.** Tax season, end of quarter, a holiday sale: the topic mix shifts every year. Compare against the same period last year, or alert only on the alignment metric during known seasonal shifts.
+
+**Mixed embedding versions.** Half the index was re-embedded with the new model and half wasn't. Alignment drops for queries that land on the old half. Treat an embedding model change as a full re-index, and alert if two model versions are ever live at once.
+
+**Monitoring the wrong thing.** Someone builds an elaborate per-dimension statistical test on query vectors that fires constantly and says nothing about answer quality. Start with alignment. Add other tests only if they've caught something alignment missed.
 
 ## Implementation Example
 
+Centroid shift and query-to-index alignment over a rolling window, a minimum-sample guard, and separate alerts for each. The test simulates a launch: users start asking about webhooks, which the indexed docs don't cover, and the alignment alert fires.
+
+```bash
+cd examples && pytest observability_and_evaluation/test_embedding_drift_detector.py
+```
+
+<!-- example: examples/observability_and_evaluation/embedding_drift_detector.py -->
 ```python
-import time
+"""Embedding Drift Detector.
+
+Two numbers, watched over a rolling window of production queries:
+
+1. Centroid shift: how far the average query has moved from the baseline.
+   Says "users are asking about different things than before".
+2. Alignment: average similarity between each query and its best document.
+   Says "retrieval is finding worse matches than before". This is the one
+   that predicts bad answers, so it gets the tighter alert.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-import numpy as np
+Vector = list[float]
+
+
+def _cosine(a: Vector, b: Vector) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot / ((sum(x * x for x in a) ** 0.5 or 1.0) * (sum(y * y for y in b) ** 0.5 or 1.0))
+
+
+def _centroid(vectors: list[Vector]) -> Vector:
+    n = len(vectors)
+    return [sum(col) / n for col in zip(*vectors)]
 
 
 @dataclass
-class EmbeddingBaseline:
-    centroid: np.ndarray
-    variance_per_dim: np.ndarray
-    mean_pairwise_similarity: float
-    sample_size: int
-    created_at: float
+class Baseline:
+    centroid: Vector
+    alignment: float  # mean best-match similarity on the baseline queries
 
 
 @dataclass
 class DriftReport:
-    centroid_shift: float
-    variance_ratio: float
-    alignment_score: float
-    is_drifted: bool
-    details: dict
+    centroid_shift: float  # 1 - cos(baseline centroid, window centroid)
+    alignment: float
+    alignment_drop: float
+    alerts: list[str] = field(default_factory=list)
 
 
-class EmbeddingDriftDetector:
-    def __init__(
-        self,
-        centroid_threshold: float = 0.15,
-        alignment_threshold: float = 0.75,
-        window_size: int = 1000,
-    ):
-        self._centroid_threshold = centroid_threshold
-        self._alignment_threshold = alignment_threshold
-        self._window_size = window_size
-        self._baseline: EmbeddingBaseline | None = None
-        self._query_window: list[np.ndarray] = []
-        self._alignment_scores: list[float] = []
+@dataclass
+class DriftDetector:
+    embed: Callable[[str], Vector]
+    index: list[Vector]  # sample of document vectors from the live index
+    window: int = 500
+    max_centroid_shift: float = 0.15
+    max_alignment_drop: float = 0.10
+    min_samples: int = 50
+    baseline: Baseline | None = None
+    _recent: deque = field(default_factory=deque)
 
-    def set_baseline(self, index_embeddings: np.ndarray) -> EmbeddingBaseline:
-        centroid = np.mean(index_embeddings, axis=0)
-        variance = np.var(index_embeddings, axis=0)
+    def best_match(self, q: Vector) -> float:
+        return max((_cosine(q, d) for d in self.index), default=0.0)
 
-        sample_idx = np.random.choice(
-            len(index_embeddings),
-            size=min(500, len(index_embeddings)),
-            replace=False,
-        )
-        sample = index_embeddings[sample_idx]
-        norms = np.linalg.norm(sample, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1, norms)
-        normalized = sample / norms
-        sim_matrix = normalized @ normalized.T
-        upper_tri = sim_matrix[np.triu_indices_from(sim_matrix, k=1)]
-        mean_sim = float(np.mean(upper_tri))
+    def fit_baseline(self, queries: list[str]) -> Baseline:
+        vectors = [self.embed(q) for q in queries]
+        self.baseline = Baseline(_centroid(vectors), sum(map(self.best_match, vectors)) / len(vectors))
+        self._recent = deque(maxlen=self.window)
+        return self.baseline
 
-        self._baseline = EmbeddingBaseline(
-            centroid=centroid,
-            variance_per_dim=variance,
-            mean_pairwise_similarity=mean_sim,
-            sample_size=len(index_embeddings),
-            created_at=time.monotonic(),
-        )
-        return self._baseline
+    def observe(self, query: str) -> None:
+        self._recent.append(self.embed(query))
 
-    def record_query(
-        self, query_embedding: np.ndarray, top_k_similarity: float
-    ) -> None:
-        self._query_window.append(query_embedding)
-        self._alignment_scores.append(top_k_similarity)
-        if len(self._query_window) > self._window_size:
-            self._query_window.pop(0)
-            self._alignment_scores.pop(0)
+    def report(self) -> DriftReport | None:
+        if self.baseline is None or len(self._recent) < self.min_samples:
+            return None  # too few queries to say anything; don't alert on noise
+        recent = list(self._recent)
+        shift = 1 - _cosine(self.baseline.centroid, _centroid(recent))
+        alignment = sum(map(self.best_match, recent)) / len(recent)
+        drop = self.baseline.alignment - alignment
 
-    def check_drift(self) -> DriftReport:
-        if self._baseline is None or len(self._query_window) < 50:
-            return DriftReport(
-                centroid_shift=0.0,
-                variance_ratio=1.0,
-                alignment_score=1.0,
-                is_drifted=False,
-                details={"reason": "insufficient data"},
-            )
-
-        query_matrix = np.array(self._query_window)
-        query_centroid = np.mean(query_matrix, axis=0)
-
-        shift_vector = query_centroid - self._baseline.centroid
-        centroid_shift = float(np.linalg.norm(shift_vector))
-
-        query_variance = np.var(query_matrix, axis=0)
-        safe_baseline_var = np.where(
-            self._baseline.variance_per_dim == 0, 1e-10, self._baseline.variance_per_dim
-        )
-        variance_ratio = float(np.mean(query_variance / safe_baseline_var))
-
-        alignment_score = float(np.mean(self._alignment_scores))
-
-        is_drifted = (
-            centroid_shift > self._centroid_threshold
-            or alignment_score < self._alignment_threshold
-        )
-
-        return DriftReport(
-            centroid_shift=centroid_shift,
-            variance_ratio=variance_ratio,
-            alignment_score=alignment_score,
-            is_drifted=is_drifted,
-            details={
-                "window_size": len(self._query_window),
-                "centroid_threshold": self._centroid_threshold,
-                "alignment_threshold": self._alignment_threshold,
-                "top_drifted_dims": int(
-                    np.sum(np.abs(query_variance - self._baseline.variance_per_dim)
-                    > 2 * self._baseline.variance_per_dim)
-                ),
-            },
-        )
+        alerts = []
+        if drop > self.max_alignment_drop:
+            alerts.append(f"retrieval alignment fell {drop:.2f} below baseline: check for gaps in the index")
+        if shift > self.max_centroid_shift:
+            alerts.append(f"query centroid moved {shift:.2f}: users are asking about new things")
+        return DriftReport(shift, alignment, drop, alerts)
 ```
+<!-- /example -->
 
 ## Tool Landscape
 
-**Embedding drift and vector database observability:**
-- Arize Phoenix — Open-source observability with embedding drift visualization and alerting
-- Evidently AI — Data and embedding drift detection with statistical tests
-- WhyLabs — Continuous profiling of embedding distributions with anomaly detection
-- Galileo — RAG-specific quality and drift monitoring
-- Custom + Prometheus — Export drift metrics to Prometheus, alert via standard thresholds
+| Tool | Notes |
+|---|---|
+| Arize Phoenix | Embedding drift views and UMAP projections of query clusters |
+| Evidently | Embedding drift tests (model-based, distance-based, share of drifted components) |
+| WhyLabs / whylogs | Profiles of embedding distributions over time |
+| Prometheus + your own job | Two gauges and two alerts; often enough |
 
-**Vector database native monitoring:**
-- Pinecone Monitoring — Built-in metric dashboards for index health
-- Milvus — Metrics export for Prometheus integration
-- Weaviate — Built-in observability endpoints
+## Related Patterns
+
+- [Span-Level Tracing](span-level-tracing.md) records best-match similarity on each retrieval span, so the drift job can read it straight from traces.
+- [Hybrid Search](../retrieval-and-memory/hybrid-search.md): falling dense alignment while BM25 still matches is a strong sign of an embedding model mismatch.
+- [Data Contract](../data-patterns/data-contract.md) catches upstream changes before they reach the index. This pattern catches what got through.
+- [Semantic Deduplication](../data-patterns/semantic-deduplication.md) should be re-run when the embedding space changes.
 
 ## Further Reading
 
-1. [Monitoring Embedding Quality in Production — Arize AI Blog](https://arize.com/blog/embeddings-monitoring/)
-2. [Detecting Data Drift for NLP Models — Evidently AI](https://www.evidentlyai.com/blog/embedding-drift-detection)
-3. [The Hidden Risks of Embedding Model Updates — Pinecone Blog](https://www.pinecone.io/learn/embedding-model-updates/)
-4. [Embedding Drift: A Silent Killer in RAG — DeepLake, 2024](https://www.activeloop.ai/resources/embedding-drift/)
+- [Shift happens: we compared 5 methods to detect drift in ML embeddings](https://www.evidentlyai.com/blog/embedding-drift-detection), Evidently AI
+- [Failing Loudly: An Empirical Study of Methods for Detecting Dataset Shift](https://arxiv.org/abs/1810.11953), Rabanser, Günnemann and Lipton, 2019

@@ -2,294 +2,203 @@
 title: Request Hedging for LLMs
 pillar: reliability
 status: emerging
-tags: [reliability, latency, tail-latency, redundancy, racing]
+tags: [reliability, latency, tail-latency, redundancy]
 related:
   - Circuit Breaker for LLMs
-  - Model Router
   - LLM Gateway
+  - Uncertainty-Triggered Retry
+example: examples/reliability/request_hedging.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-07"
-description: Send duplicate requests to multiple providers and return the fastest adequate response to mitigate tail latency.
+last_updated: "2026-11"
+description: If the primary hasn't answered by its own p95, send the same request to a backup and take whichever good answer arrives first.
 sidebar:
-  order: 3
+  order: 2
 ---
 
 ## What It Is
 
-Request Hedging for LLMs sends identical inference requests to 2-3 providers simultaneously (or after a short delay), accepts the first response that meets quality criteria, and cancels the remaining in-flight requests. This technique, adapted from Google's "Tail at Scale" paper, reduces p99 latency at the cost of occasional duplicate inference charges. Unlike naive racing of all requests, hedging uses a delay threshold to avoid unnecessary duplication.
+Hedged requests come from Google's *The Tail at Scale*. Send a request to the primary. If it hasn't answered by roughly its 95th-percentile latency, send the same request to a second replica, use whichever answer arrives first, and cancel the other.
+
+For LLMs, the "second replica" is usually another provider or region serving a comparable model. One twist: "first" has to mean first *acceptable* answer, because a fast empty completion is not a win.
 
 ## The Problem It Solves
 
-LLM inference has high tail latency. P99 response times can be 5-10x slower than P50 due to:
+LLM latency has a long tail. Most requests to a given model finish in a few seconds, but a small share sit in a provider's queue, land on a cold or overloaded replica, or stall partway through the stream. Users never complain about the median. They remember the time the assistant spun for 30 seconds.
 
-- Backend batching and queueing on provider infrastructure
-- Cold starts when scaling up capacity
-- Spot instance interruptions or transient network issues
-- Load imbalance across provider regions
-
-Traditional timeout strategies discard the work already performed by the slow request. Retrying after timeout doubles latency. Waiting for the slowest request degrades user experience in interactive applications where every second matters.
-
-Request hedging preserves the work from both requests: whichever completes first wins, and the loser is canceled. P99 latency approaches P50 of the faster provider, not P99 of the slower.
+A timeout-and-retry approach makes the slow requests slower still: you wait out the timeout, *then* start again. Hedging starts the second attempt while the first is still running, so the user waits for whichever finishes first.
 
 ## How It Works
 
 <pre class="mermaid">
 sequenceDiagram
-    participant Client
-    participant Primary as Primary Provider
-    participant Backup as Backup Provider
-    
-    Client->>Primary: Request (t=0ms)
-    
-    Note over Client: Wait for hedge delay<br/>(e.g., p95 latency threshold)
-    
-    alt Primary responds within delay
-        Primary-->>Client: Response (t=800ms)
-        Note over Client: Return primary response<br/>No hedge needed
-    else Hedge delay exceeded
-        Client->>Backup: Hedged request (t=2000ms)
-        
-        alt Primary completes first
-            Primary-->>Client: Response (t=2500ms)
-            Client->>Backup: Cancel request
-            Note over Client: Return primary response
-        else Backup completes first
-            Backup-->>Client: Response (t=2300ms)
-            Client->>Primary: Cancel request
-            Note over Client: Return backup response
+    participant C as Client
+    participant P as Primary
+    participant B as Backup
+    C->>P: request (t=0)
+    Note over C: wait up to hedge delay<br/>(primary's rolling p95)
+    alt primary answers in time
+        P-->>C: answer
+    else delay passes
+        C->>B: same request (hedge)
+        alt backup first and acceptable
+            B-->>C: answer
+            C-xP: cancel
+        else primary first and acceptable
+            P-->>C: answer
+            C-xB: cancel
         end
     end
 </pre>
 
-1. **Primary request**: Send to preferred provider with best price/quality ratio
-2. **Delay threshold**: Wait for delay period (e.g., provider's p95 latency, typically 2-3 seconds)
-3. **Hedge trigger**: If primary hasn't responded by delay threshold, send identical request to backup provider
-4. **Race**: Wait for first adequate response from either provider
-5. **Quality check** (optional): Validate response meets minimum quality bar before accepting
-6. **Cancel losers**: Immediately cancel the slower in-flight request to avoid paying for unused work
-7. **Metric collection**: Track hedge rate, latency distribution, and cost overhead
+1. **Send to the primary.**
+2. **Wait up to the hedge delay.** Derive it from the primary's own recent latencies (p90–p95), not a hard-coded number, so it follows the provider as it speeds up or slows down.
+3. **Hedge** by sending the identical request to the backup.
+4. **Race,** and accept the first answer that passes a cheap check (non-empty, valid JSON if JSON was requested). A primary that answers fast but badly also triggers the hedge.
+5. **Cancel the loser.** With streaming APIs, closing the connection stops generation, and most providers then stop charging for output tokens.
 
-The delay threshold is critical: too short and most requests hedge unnecessarily (2x cost); too long and hedging doesn't help tail latency.
+At a p95 delay, only about 5% of requests ever hedge, so the extra cost is a few percent of spend, not double.
 
 ## When to Use It
 
-- User-facing interactive applications with strict latency SLOs (e.g., chatbots, real-time assistants)
-- P99 latency is a key product metric and current tail is unacceptable
-- You have 2+ providers with similar quality and pricing
-- Cost of occasional duplicate requests < cost of SLO violations or user churn
-- Providers support request cancellation or charge only for completed tokens
-- Your application is read-only (no side effects like writes, tool calls that modify state)
+- Interactive features with a latency SLO, where p99 is the number that matters.
+- You have a second provider or region with comparable quality.
+- The request has no side effects: plain generation, classification, extraction.
 
 ## When NOT to Use It
 
-- Batch processing or background tasks where latency is irrelevant
-- Only one provider available (no backup to hedge to)
-- Providers charge per-request submission regardless of cancellation
-- Requests have side effects (database writes, API calls to external services)
-- Your latency budget is loose (p99 < 10s is acceptable)
-- Cost optimization is the primary goal (hedging increases spend)
-- Request rate is low enough that tail latency is statistically insignificant
+- **Anything with side effects.** Never hedge a tool call that sends an email, writes to a database or charges a card. You'd do it twice.
+- **Batch and background jobs.** Nobody is waiting, so the extra cost buys nothing.
+- **The backup is noticeably worse.** Hedging then serves your worst answers to exactly the users who already waited longest.
+- **Cancellation doesn't stop billing** on your provider or proxy. Then every hedge costs a full second request. Test this before you rely on it.
 
 ## Trade-offs
 
-1. **Cost overhead** — 10-20% of requests exceed the hedge delay, triggering duplicate inference. If hedge rate is 15% and you pay for both requests, total cost increases by 15%. Some providers charge per-token-generated, so canceling early saves most of the cost.
-
-2. **Provider fairness** — Backup provider receives mostly slow/problematic requests (those that exceeded the delay). This skewed traffic pattern may trigger rate limits or appear as abusive behavior. Rotate which provider is "primary" to balance load.
-
-3. **Cancellation reliability** — Not all LLM providers support mid-stream request cancellation. If cancellation fails, you pay full price for both requests. OpenAI and Anthropic support cancellation via connection close; some proxy layers do not propagate cancellation.
-
-4. **Quality variance risk** — First response may be fast but lower quality (hallucination, incomplete reasoning). Slower response may be better but gets canceled. Mitigation: add quality gate that rejects inadequate fast responses.
+- **Cost.** You pay for duplicate work on the hedged fraction of requests. The hedge delay is the dial between cost and tail latency.
+- **Inconsistent answers.** The same question can be answered by different models depending on timing. If outputs need to be consistent (same JSON shape, same tone), check that both providers produce them.
+- **Lopsided backup traffic.** The backup only ever sees your slowest requests, and their volume tracks the primary's bad days. Size its rate limits for that.
 
 ## Failure Modes
 
-### Hedge Thrashing
-**Trigger**: Delay threshold set too low (e.g., below p50 latency). Most requests exceed the delay and trigger hedging.  
-**Symptom**: Hedge rate climbs to 60-80%, nearly doubling inference costs with minimal latency improvement. Backup provider may rate-limit due to excessive traffic.  
-**Mitigation**: Calibrate delay threshold to provider's p90-p95 latency from historical data. Monitor hedge rate; target 10-20%. Use exponential moving average to adapt threshold dynamically as provider latency shifts.
+**The delay is too short, so most requests hedge.** A hard-coded 1-second delay against a provider whose median is 2 seconds hedges most requests and roughly doubles spend. Use a rolling percentile, and alert if the hedge rate goes above about 10%.
 
-### Quality Divergence
-**Trigger**: Primary and backup providers use different models or configurations. Backup responds faster but with lower quality (hallucination, incomplete answer).  
-**Symptom**: Fast but wrong responses served to users. Quality metrics degrade while latency improves.  
-**Mitigation**: Add quality gate: validate response for structural correctness (JSON parsing, required fields), minimum length, or absence of refusal language before accepting. If fast response fails quality check, wait for slower response.
+**Primary outage floods the backup.** The primary degrades for an hour, every request hedges, and the backup hits its rate limit. Now both paths fail. When the hedge rate spikes, the [circuit breaker](circuit-breaker.md) should open and send traffic to the backup directly, without the duplicate.
 
-### Cancellation Failure and Cost Explosion
-**Trigger**: Provider or proxy layer does not honor cancellation. Both requests run to completion and are billed.  
-**Symptom**: Cost doubles on all hedged requests (15-20% of traffic), increasing monthly spend by 15-20%. Difficult to detect without detailed per-request cost tracking.  
-**Mitigation**: Test cancellation behavior in staging before production rollout. Monitor per-request costs and flag anomalies. If cancellation is unreliable, reduce hedge rate by increasing delay threshold or disable hedging for that provider.
-
-### Quota Exhaustion on Backup
-**Trigger**: Primary provider degrades for extended period. Most requests hedge, flooding backup provider.  
-**Symptom**: Backup provider hits rate limits or quota caps. Both paths fail, leaving no working fallback.  
-**Mitigation**: Reserve backup provider quota for hedged traffic (e.g., 20% of primary capacity). Combine with circuit breaker pattern: if primary fails consistently, open circuit and route all traffic to backup without hedging.
+**Cancellation doesn't propagate.** A proxy between you and the provider keeps the upstream connection open after you cancel, so you pay for both. Check on the provider's usage dashboard, not just in your client logs.
 
 ## Implementation Example
 
+An asyncio hedge with a rolling-p95 delay, an acceptance check, hedging when the primary returns a bad fast answer, and cancellation of the loser. The tests use real (tiny) sleeps to race the providers, including one that checks the slow primary was actually cancelled.
+
+```bash
+cd examples && pytest reliability/test_request_hedging.py
+```
+
+<!-- example: examples/reliability/request_hedging.py -->
 ```python
+"""Request Hedging for LLMs.
+
+Send to the primary. If it hasn't answered by the hedge delay (set from its
+own recent p95), send the same request to a backup and take whichever
+*acceptable* answer arrives first. Cancel the loser.
+
+Only for requests without side effects: never hedge a tool call that writes.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import time
-from typing import Callable, Optional, Any
+from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+AsyncLLM = Callable[[str], Awaitable[str]]
+
+
+class LatencyTracker:
+    """Rolling window of observed latencies; the hedge delay follows the provider."""
+
+    def __init__(self, window: int = 200, quantile: float = 0.95, default_s: float = 2.0, min_samples: int = 20):
+        self.samples: deque[float] = deque(maxlen=window)
+        self.quantile, self.default_s, self.min_samples = quantile, default_s, min_samples
+
+    def observe(self, seconds: float) -> None:
+        self.samples.append(seconds)
+
+    def delay(self) -> float:
+        if len(self.samples) < self.min_samples:
+            return self.default_s
+        ordered = sorted(self.samples)
+        return ordered[min(int(len(ordered) * self.quantile), len(ordered) - 1)]
+
+
 @dataclass
-class HedgedResponse:
-    content: str
-    provider: str
-    latency_ms: float
+class HedgeResult:
+    text: str
+    winner: str
     hedged: bool
-
-class LLMProvider:
-    """Minimal provider interface for hedging"""
-    
-    def __init__(self, name: str, api_call: Callable):
-        self.name = name
-        self.api_call = api_call
-    
-    async def complete(self, prompt: str, **kwargs) -> str:
-        """Call provider API and return response text"""
-        return await self.api_call(prompt, **kwargs)
+    latency_s: float
 
 
-async def hedged_completion(
+async def hedged_complete(
     prompt: str,
-    primary: LLMProvider,
-    backup: LLMProvider,
-    hedge_delay_ms: int = 2000,
-    quality_check: Optional[Callable[[str], bool]] = None,
-    **model_kwargs
-) -> HedgedResponse:
-    """
-    Send request to primary provider. If no response within hedge_delay_ms,
-    send to backup. Return first adequate response and cancel the other.
-    
-    Args:
-        prompt: Input prompt for the LLM
-        primary: Primary provider (best price/quality)
-        backup: Backup provider for hedging
-        hedge_delay_ms: Delay before sending hedge request (default: 2000ms)
-        quality_check: Optional function to validate response quality
-        **model_kwargs: Additional parameters passed to provider APIs
-    
-    Returns:
-        HedgedResponse with content, provider name, latency, and hedge flag
-    """
-    
-    start_time = time.monotonic()
+    primary: tuple[str, AsyncLLM],
+    backup: tuple[str, AsyncLLM],
+    tracker: LatencyTracker,
+    accept: Callable[[str], bool] = lambda text: bool(text.strip()),
+) -> HedgeResult:
+    start = time.monotonic()
+    names: dict[asyncio.Task, str] = {}
+
+    def launch(name: str, call: AsyncLLM) -> None:
+        names[asyncio.ensure_future(call(prompt))] = name
+
+    launch(*primary)
+    pending = set(names)
+    done, pending = await asyncio.wait(pending, timeout=tracker.delay())
     hedged = False
-    
-    # Start primary request
-    primary_task = asyncio.create_task(
-        primary.complete(prompt, **model_kwargs)
-    )
-    backup_task = None
-    
-    try:
-        # Wait up to hedge_delay for primary response
-        response = await asyncio.wait_for(
-            primary_task,
-            timeout=hedge_delay_ms / 1000.0
-        )
-        
-        # Check quality if validator provided
-        if quality_check is None or quality_check(response):
-            latency_ms = (time.monotonic() - start_time) * 1000
-            return HedgedResponse(
-                content=response,
-                provider=primary.name,
-                latency_ms=latency_ms,
-                hedged=False
-            )
-        
-        # Primary response failed quality check; will hedge below
-        
-    except asyncio.TimeoutError:
-        # Hedge delay exceeded without response; launch backup
+    if not done:
         hedged = True
-        backup_task = asyncio.create_task(
-            backup.complete(prompt, **model_kwargs)
-        )
-    
-    # Race remaining tasks
-    pending_tasks = {primary_task}
-    if backup_task:
-        pending_tasks.add(backup_task)
-    
-    done, pending = await asyncio.wait(
-        pending_tasks,
-        return_when=asyncio.FIRST_COMPLETED
-    )
-    
-    # Cancel slower request(s)
-    for task in pending:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-    
-    # Extract result from winner
-    winner_task = done.pop()
-    response = winner_task.result()
-    
-    # Determine which provider won
-    provider_name = backup.name if winner_task == backup_task else primary.name
-    latency_ms = (time.monotonic() - start_time) * 1000
-    
-    return HedgedResponse(
-        content=response,
-        provider=provider_name,
-        latency_ms=latency_ms,
-        hedged=hedged
-    )
+        launch(*backup)
+        pending = set(names) - done
 
-
-# Example quality check function
-def validate_json_response(response: str) -> bool:
-    """Example: check if response is valid JSON with required fields"""
     try:
-        import json
-        data = json.loads(response)
-        return "answer" in data  # Require specific field
-    except (json.JSONDecodeError, KeyError):
-        return False
-
-
-# Usage example
-async def main():
-    # Define providers (simplified; real implementation calls actual APIs)
-    primary = LLMProvider("openai-gpt4o-mini", api_call=lambda p, **kw: openai_api(p, **kw))
-    backup = LLMProvider("anthropic-claude-sonnet", api_call=lambda p, **kw: anthropic_api(p, **kw))
-    
-    result = await hedged_completion(
-        prompt="Explain quantum entanglement in simple terms",
-        primary=primary,
-        backup=backup,
-        hedge_delay_ms=2000,
-        temperature=0.7
-    )
-    
-    print(f"Response from {result.provider} (latency: {result.latency_ms:.0f}ms, hedged: {result.hedged})")
-    print(result.content)
+        while True:
+            for task in done:
+                if task.exception() is None and accept(task.result()):
+                    elapsed = time.monotonic() - start
+                    if names[task] == primary[0]:
+                        tracker.observe(elapsed)
+                    return HedgeResult(task.result(), names[task], hedged, elapsed)
+            if not hedged:
+                # Primary answered fast but badly: that's a reason to try the backup too.
+                hedged = True
+                launch(*backup)
+                pending = set(names) - done
+            if not pending:
+                raise RuntimeError("no provider returned an acceptable answer")
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in pending:
+            task.cancel()  # with streaming APIs, closing the connection stops billing
 ```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|------|------|-------|
-| LiteLLM | Open-source proxy | Supports fallback routing; does not natively implement hedging with racing |
-| Portkey | Managed gateway | Automatic failover with latency-based routing; approximates hedging via fast timeout + fallback |
-| Martian | LLM Gateway | Supports request hedging with configurable delay thresholds |
-| Custom implementation | DIY | Necessary for fine-grained control over delay thresholds and cancellation logic |
-| AWS Step Functions | Orchestration | Can implement hedging logic with parallel states and "first to complete" choice |
+| Tool | Notes |
+|---|---|
+| Custom (asyncio, Go contexts, …) | Most teams write this themselves. It's small, and the policy is yours |
+| LiteLLM, Portkey | Timeouts plus fallbacks: sequential, not hedged, but a reasonable starting point |
+| gRPC hedging policy | Built-in hedging if you self-host models behind gRPC |
 
 ## Related Patterns
 
-- **[Circuit Breaker for LLMs](circuit-breaker.md)** — Circuit breaker handles sustained provider failures; hedging handles transient tail latency. Use both: circuit breaker to avoid sending hedges to a failing provider.
-- **[Model Router](../inference-and-serving/model-router.md)** — Router selects one provider based on static policy; hedging dynamically selects winner based on actual response time.
-- **[LLM Gateway](../inference-and-serving/llm-gateway.md)** — Gateway is the natural implementation point for hedging logic, centralizing latency monitoring and provider orchestration.
+- [Circuit Breaker for LLMs](circuit-breaker.md) handles sustained degradation. Hedging handles individual slow requests. Use the breaker to stop hedging against a provider that is down.
+- [LLM Gateway](../inference-and-serving/llm-gateway.md) is the natural place to implement hedging, since it already sees every provider's latency.
+- [Uncertainty-Triggered Retry](uncertainty-triggered-retry.md) re-runs answers that are *bad*. Hedging races answers that are *slow*.
 
 ## Further Reading
 
-- [The Tail at Scale — Dean & Barroso (Google)](https://research.google/pubs/pub40801/) — Foundational paper introducing hedged requests and tail-tolerant techniques
-- [Hedged Requests: Stochastic Response Times — Microsoft Research](https://www.microsoft.com/en-us/research/publication/hedged-requests/) — Analysis of hedging in distributed systems
-- [Release It! — Michael Nygard](https://pragprog.com/titles/mnee2/release-it-second-edition/) — Chapter on latency and timeout patterns
-- [Designing Data-Intensive Applications — Martin Kleppmann](https://dataintensive.net/) — Section on tail latency amplification in multi-tier systems
+- [The Tail at Scale](https://research.google/pubs/the-tail-at-scale/), Jeffrey Dean and Luiz André Barroso, CACM 2013
+- [gRPC request hedging design (A6)](https://github.com/grpc/proposal/blob/master/A6-client-retries.md)

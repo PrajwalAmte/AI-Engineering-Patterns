@@ -2,158 +2,176 @@
 title: No-Progress Detection
 pillar: loop-engineering
 status: emerging
-tags: [loops, agents, convergence, oscillation, control-flow]
+tags: [agents, loops, stall-detection, oscillation]
 related:
   - Loop Termination
   - Reflexion Loop
-  - Embedding Drift Detector
+  - Semantic Rollback
+example: examples/loop_engineering/no_progress_detection.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-07"
-description: Detect stalled or oscillating agent loops by measuring the delta between successive iterations, so the loop can stop before exhausting its full iteration ceiling.
+last_updated: "2026-11"
+description: Notice when an agent loop keeps producing the same thing, or flips between a few things, and stop it before the iteration ceiling, keeping the best attempt.
 sidebar:
-  order: 3
+  order: 2
 ---
 
 ## What It Is
 
-The No-Progress Detection pattern measures how much an agentic loop's state actually changes from one iteration to the next, and stops the loop early when that measurement shows a plateau (no meaningful change) or an oscillation (cycling between a small number of near-identical states) — rather than letting the loop run all the way to its iteration ceiling regardless of whether it's still making progress.
+A monitor that compares each iteration's output with recent ones and classifies the loop's trend:
+
+- **Improving**: outputs differ and, if scored, aren't getting worse.
+- **Plateau**: the same output (or a cosmetic variant) for several iterations in a row.
+- **Oscillating**: bouncing between a few states (A → B → A → B).
+- **Regressing**: the score dropped. Flag it, but keep going, because some paths dip before they improve.
+
+On plateau or oscillation, the loop stops and returns the *best* iteration, which for an oscillating loop often isn't the last one.
 
 ## The Problem It Solves
 
-An iteration ceiling guarantees a loop eventually stops, but it's a blunt instrument: it lets a loop burn its *entire* budget even when it visibly stopped improving several iterations earlier. Two specific failure shapes are common enough to name:
+An iteration ceiling guarantees the loop ends, but only after it has used every iteration. Two stall shapes are common:
 
-- **Plateau**: the loop keeps producing output, but each successive attempt is functionally the same as the last — a coding agent that keeps "fixing" a bug with the identical patch, a research agent that keeps re-running the same query with cosmetic rewording.
-- **Oscillation**: the loop alternates between two (or a small cycle of) near-identical states without ever settling — an agent that alternates between two tool calls, or a Reflexion-style loop where the Self-Reflection step keeps "correcting" the Actor back and forth between two wrong answers.
+- A coding agent applies the same patch for the fourth time, with a reworded commit message each time.
+- A Reflexion-style loop where the reflection keeps "fixing" the actor back and forth between two approaches.
 
-Both waste the remaining iteration budget and, in production, the added latency and cost of running to the ceiling rather than stopping the moment the stall is detectable.
+Both burn the remaining budget, and add latency, while producing nothing new.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart TD
-    A["Iteration completes, output added to history"] --> B["Compute delta vs. recent history"]
-    B --> C{"Delta classification"}
-    C -->|"Improving"| D["Continue loop"]
-    C -->|"Plateaued (delta ~0 for N iterations)"| E["Terminate: stalled"]
-    C -->|"Oscillating (repeating cycle detected)"| F["Terminate: stalled"]
-    C -->|"Regressing"| G["Continue loop, but flag for review"]
+    O["Iteration output (+ optional score)"] --> P{"Same as previous?<br/>(similarity ≥ threshold)"}
+    P -->|"yes"| PL["plateau count +1"]
+    P -->|"no"| OS{"Same as one of the<br/>2–3 before that?"}
+    OS -->|"yes"| OC["oscillation count +1"]
+    OS -->|"no"| R["reset counts"]
+    PL & OC --> W{"Count ≥ patience?"}
+    W -->|"yes"| STOP["Stalled → return best iteration"]
+    W -->|"no"| GO["Continue"]
+    R --> GO
 </pre>
 
-1. **Maintain a rolling history** of the loop's output at each iteration — not the full context, just the state being evaluated for progress (a patch diff, a generated answer, a tool-call sequence).
-2. **Choose a delta metric appropriate to the task.** Options include exact or near-exact match (cheap, works for plateau detection), edit distance or token-level diff (works for text), embedding cosine similarity (works for semantic drift), or task-specific signals like test-pass count (works best when available, since it measures actual progress rather than surface similarity).
-3. **Classify the trend** after each iteration: *improving* (delta shows meaningful forward movement), *plateaued* (delta near zero for a patience window of N consecutive iterations), *oscillating* (the history repeats a short cycle of 2-3 states), or *regressing* (the task-specific signal is getting worse, not just unchanged).
-4. **Apply a patience window before terminating on plateau or oscillation** — a single flat iteration is normal; only stop after the delta stays flat, or the cycle repeats, for a configured number of consecutive iterations.
-5. **On termination, return the best iteration seen so far**, not necessarily the last one — especially important for oscillating loops, where the last state may not be the best of the cycle.
+1. **Compare the state that matters,** such as the patch diff, the answer or the tool-call sequence. Not the whole context.
+2. **Pick a similarity measure for the task.** Text similarity (as in the example) catches identical and near-identical outputs. Embedding similarity catches rewordings. A task metric (tests passing, score) catches "different text, no better".
+3. **Use a patience window.** One repeat is normal. Two or three in a row is a stall.
+4. **Look back a few steps** for cycles, not just one.
+5. **Track the best iteration** by score when you have one, and return it on exit.
 
 ## When to Use It
 
-- Any bounded loop pattern (Reflexion Loop, iterative refinement, agent re-planning) where a measurable delta between iterations is available and cost or latency savings from stopping early matter.
-- Loops that have previously been observed to oscillate or plateau in practice — this pattern is easiest to justify once you've seen the failure mode, harder to pre-emptively tune correctly.
-- Systems where a task-specific progress signal already exists (test-pass count, retrieval-relevance score) that can be reused as the delta metric at near-zero extra cost.
+- Agent loops with ceilings above five iterations or so, where early stalls waste real money.
+- Self-refinement and reflection loops, which are especially prone to oscillation.
 
 ## When NOT to Use It
 
-- Tasks with no measurable delta between iterations, or where surface similarity is a poor proxy for actual progress (e.g., a long-form writing loop where two drafts can look textually similar but differ meaningfully in quality).
-- Loops expected to have genuinely slow, incremental convergence, where several visually-similar iterations in a row are normal and expected rather than a sign of stalling — an aggressive patience window here causes false early stops.
-- Situations where the cost of a false early stop (abandoning a task that was about to succeed) is much higher than the cost of a few wasted iterations — in that case, let the [Loop Termination](/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/) pattern's iteration ceiling be the only backstop.
+- **Short loops** (two or three iterations). The patience window would be most of the loop.
+- **Exploratory loops** where revisiting earlier states is intentional (a search over options).
 
 ## Trade-offs
 
-1. **Metric choice is task-specific and can be wrong** — a delta metric tuned for code diffs doesn't transfer to open-ended text generation, and a poorly chosen metric can either miss real stalls or flag false ones.
-2. **Patience window tuning** — too short, and slow-but-real progress gets mistaken for a plateau; too long, and the pattern provides little savings over just running to the ceiling.
-3. **Added per-iteration compute** — computing a delta (especially embedding-based) has a real cost, which needs to be weighed against the savings from stopping early.
-4. **Metric gaming** — a loop can settle into an output that scores as "improving" on the chosen delta metric while making no real progress on the actual task, if the metric and the task diverge.
+- **Threshold tuning.** A threshold that's too loose calls real progress a plateau. Too strict, and cosmetic rewording counts as progress. Tune it on logged loops.
+- **Similarity misses semantic sameness.** Two different-looking patches can fail the same test for the same reason. Pair text similarity with a task signal (same failing test, same error).
+- **The extra comparisons** are cheap for text, and less so with embeddings on every step.
 
 ## Failure Modes
 
-### False Plateau
-**Trigger**: The delta metric shows near-zero change between iterations, but the underlying content actually differs in a way that matters for the task (e.g., a one-line but critical fix that a text-similarity metric treats as a negligible edit).
-**Symptom**: The loop terminates as "stalled" just before it would have succeeded.
-**Mitigation**: Prefer task-specific progress signals (test-pass count, schema-validity score) over generic text similarity whenever one is available; reserve generic similarity metrics for cases with no better option.
+**Cosmetic variation hides a plateau.** The agent changes a variable name each time and the text differs enough to look like progress. Compare normalized outputs (strip whitespace and comments), or compare outcomes (the same failing test).
 
-### Undetected Oscillation
-**Trigger**: The patience window or cycle-length check is too short to catch a 3-or-more-state oscillation cycle.
-**Symptom**: The loop keeps cycling and only stops when it eventually hits the iteration ceiling, defeating the purpose of this pattern.
-**Mitigation**: Check for repeating cycles of at least 2-4 states, not just exact-repeat-of-the-immediately-prior-state, and size the patience window to be at least twice the longest cycle length you expect to catch.
+**Stopping on a dip.** A regression gets treated as a stall, and the loop exits just before the fix. Treat regressing as a flag, not a stop.
 
-### Metric-Task Mismatch
-**Trigger**: The chosen delta metric measures something correlated with, but not identical to, actual task progress.
-**Symptom**: The loop reports "improving" while the actual output quality is flat or worsening, or reports "stalled" on a loop that was genuinely progressing slowly.
-**Mitigation**: Validate the delta metric against a held-out set of known-good and known-stalled loop traces before relying on it in production; treat metric selection as itself requiring evaluation, not a one-time assumption.
+**Returning the last output.** On an oscillating loop, the last state is a coin flip. Return the best-scored one.
 
 ## Implementation Example
 
+Plateau and cycle detection with a patience window, a pluggable similarity function, a regression flag, and best-iteration tracking. The tests include an A/B flip-flop and a "fix" that only adds whitespace.
+
+```bash
+cd examples && pytest loop_engineering/test_no_progress_detection.py
+```
+
+<!-- example: examples/loop_engineering/no_progress_detection.py -->
 ```python
-from dataclasses import dataclass
-from typing import Callable, Optional
+"""No-Progress Detection.
+
+Watch what an agent loop produces each iteration and say when it has stopped
+getting anywhere: the same output again and again (plateau), or bouncing
+between a few outputs (oscillation). Return the best iteration seen, which for
+an oscillating loop is often not the last one.
+"""
+
+from __future__ import annotations
+
+import difflib
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+Similarity = Callable[[str, str], float]
+
+
+def text_similarity(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio()
 
 
 @dataclass
-class ProgressState:
-    history: list
-    patience: int = 3
+class ProgressMonitor:
+    similarity: Similarity = text_similarity
+    same_threshold: float = 0.97  # above this, two outputs count as "the same"
+    patience: int = 2  # consecutive stalled iterations before we call it
+    max_cycle: int = 3  # detect A-B-A and A-B-C-A cycles
+    history: list[str] = field(default_factory=list)
+    scores: list[float | None] = field(default_factory=list)
+    _plateau: int = 0
+    _oscillation: int = 0
 
+    def observe(self, output: str, score: float | None = None) -> str:
+        """Returns "improving", "regressing", "plateau" or "oscillating"."""
+        prev = self.history[-1] if self.history else None
+        self.history.append(output)
+        self.scores.append(score)
+        if prev is None:
+            return "improving"
 
-def default_similarity(a: str, b: str) -> float:
-    # Minimal placeholder: word-overlap ratio. Replace with an
-    # embedding-based or task-specific metric in production.
-    words_a, words_b = set(a.split()), set(b.split())
-    if not words_a or not words_b:
-        return 0.0
-    return len(words_a & words_b) / len(words_a | words_b)
+        if self.similarity(output, prev) >= self.same_threshold:
+            self._plateau += 1
+            self._oscillation = 0
+        else:
+            self._plateau = 0
+            earlier = self.history[-1 - self.max_cycle : -2]
+            if any(self.similarity(output, old) >= self.same_threshold for old in earlier):
+                self._oscillation += 1
+            else:
+                self._oscillation = 0
 
+        if self._plateau >= self.patience:
+            return "plateau"
+        if self._oscillation >= self.patience:
+            return "oscillating"
+        if score is not None and self.scores[-2] is not None and score < self.scores[-2]:
+            return "regressing"  # worth flagging, not stopping: some paths dip before improving
+        return "improving"
 
-def detect_plateau(
-    history: list,
-    patience: int,
-    similarity_fn: Callable[[str, str], float] = default_similarity,
-    threshold: float = 0.95,
-) -> bool:
-    if len(history) < patience + 1:
-        return False
-    window = history[-(patience + 1):]
-    return all(
-        similarity_fn(window[i], window[i + 1]) >= threshold
-        for i in range(len(window) - 1)
-    )
-
-
-def detect_oscillation(history: list, max_cycle_length: int = 4) -> bool:
-    for cycle_len in range(2, max_cycle_length + 1):
-        if len(history) < cycle_len * 2:
-            continue
-        recent = history[-cycle_len * 2:]
-        first_half, second_half = recent[:cycle_len], recent[cycle_len:]
-        if first_half == second_half:
-            return True
-    return False
-
-
-def no_progress_check(history: list, patience: int = 3) -> Optional[str]:
-    if detect_oscillation(history):
-        return "oscillating"
-    if detect_plateau(history, patience):
-        return "plateaued"
-    return None
+    def best(self) -> str:
+        scored = [(s, i) for i, s in enumerate(self.scores) if s is not None]
+        if scored:
+            return self.history[max(scored)[1]]
+        return self.history[-1]
 ```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| sentence-transformers / OpenAI embeddings | Embedding libraries | Common backbone for semantic delta scoring between iterations |
-| difflib / Levenshtein libraries | Open-source | Cheap text-delta metrics for code diffs and short text |
-| Custom task-specific scorers (test-pass count, schema validators) | Task-specific | Usually the highest-signal option when available; prefer these over generic similarity |
-| LangGraph checkpoints | Framework | Can be inspected across steps to build a rolling history for delta computation |
+| Tool | Notes |
+|---|---|
+| difflib, rapidfuzz | Text similarity for plateau and cycle detection |
+| Embedding models | Semantic similarity when rewording is common |
+| Your test runner | The best progress signal for coding agents: did the set of failing tests change? |
 
 ## Related Patterns
 
-- **[Loop Termination](/AI-Engineering-Patterns/patterns/loop-engineering/loop-termination/)** — this pattern supplies one of the three signals that Loop Termination consumes.
-- **[Reflexion Loop](/AI-Engineering-Patterns/patterns/loop-engineering/reflexion-loop/)** — a common loop shape where oscillation between two corrected-and-re-broken states is a frequently observed failure.
-- **[Embedding Drift Detector](/AI-Engineering-Patterns/patterns/observability/embedding-drift-detector/)** — a related idea applied across time in production monitoring rather than within a single loop's iterations.
+- [Loop Termination](loop-termination.md) uses this as its stall signal.
+- [Reflexion Loop](reflexion-loop.md) tends to oscillate. A repeated lesson is a related stall signal.
+- [Semantic Rollback](semantic-rollback.md): when a step stalls, roll back and change strategy rather than repeating it.
 
 ## Further Reading
 
-- [Loop Engineering (2026): Self-Prompting AI Agent Patterns — Agent Shortlist](https://agentshortlist.com/articles/loop-engineering)
-- [What Is Loop Engineering? — MindStudio](https://www.mindstudio.ai/blog/what-is-loop-engineering-ai-coding-agents)
-- [Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)](https://arxiv.org/abs/2303.11366)
+- [Reflexion: Language Agents with Verbal Reinforcement Learning](https://arxiv.org/abs/2303.11366), Shinn et al., 2023. Includes discussion of when self-reflection stops helping.
+- [Large Language Models Cannot Self-Correct Reasoning Yet](https://arxiv.org/abs/2310.01798), Huang et al., 2023

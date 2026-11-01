@@ -1,0 +1,23 @@
+name: Production story
+description: Share how a pattern worked (or failed) for you in production
+labels: ["field-report"]
+body:
+  - type: input
+    id: pattern
+    attributes:
+      label: Pattern(s)
+    validations:
+      required: true
+  - type: textarea
+    id: story
+    attributes:
+      label: What happened?
+      description: Scale, what you tried, what broke, what you'd do differently. Anonymise freely.
+    validations:
+      required: true
+  - type: checkboxes
+    id: credit
+    attributes:
+      label: Credit
+      options:
+        - label: OK to quote this (anonymised) on the pattern page with credit to my GitHub handle.

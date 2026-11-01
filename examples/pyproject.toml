@@ -1,0 +1,14 @@
+[project]
+name = "ai-engineering-patterns-examples"
+version = "0.1.0"
+description = "Runnable, tested reference implementations for every pattern in AI Engineering Patterns."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "--import-mode=importlib -q -p no:asyncio"
+testpaths = ["."]

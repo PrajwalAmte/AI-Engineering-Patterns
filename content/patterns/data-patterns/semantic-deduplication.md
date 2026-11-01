@@ -4,234 +4,189 @@ pillar: data-patterns
 status: emerging
 tags: [data-quality, deduplication, embeddings, rag, indexing]
 related:
-  - Data Contract Pattern
+  - Data Contract
   - Hybrid Search
   - Embedding Drift Detector
   - Retrieval Freshness Watermark
+example: examples/data_patterns/semantic_deduplication.py
 contributors: ["@PrajwalAmte"]
-last_updated: "2026-04"
-description: Deduplicate documents at the meaning level before indexing to prevent redundant chunks from wasting context window slots during retrieval.
+last_updated: "2026-11"
+description: Collapse chunks that say the same thing before indexing, so the retriever doesn't give the model the same answer five times, without merging chunks that differ in a number.
 sidebar:
   order: 2
 ---
 
 ## What It Is
 
-Semantic deduplication identifies and eliminates documents (or chunks) that express the same information in different words before they enter the retrieval index. Unlike exact or near-duplicate detection (hash-based or n-gram overlap), semantic deduplication operates on meaning — catching paraphrases, reformulations, and cross-source redundancy that string-matching approaches miss entirely.
+Before chunks go into the retrieval index, group the ones that say the same thing in different words, keep one canonical chunk per group, and record what was merged into what. Exact-match and near-duplicate methods (hashing, MinHash) catch copies. Semantic deduplication uses embeddings to catch rewrites.
+
+Pretraining pipelines have deduplicated web data at this level for years. The RAG version is less established, hence "emerging".
 
 ## The Problem It Solves
 
-Real-world corpora are full of semantic duplicates that look different on the surface:
+Real knowledge bases repeat themselves. The password reset steps are in the wiki, the FAQ, the onboarding guide and three old support macros. Each is worded slightly differently, and all of them are indexed.
 
-- **Cross-source redundancy**: The same product specification exists in a marketing page, a support FAQ, a technical datasheet, and an internal wiki. Each is worded differently. All four get indexed. When a user asks about the product, the retriever returns 3-4 chunks that say the same thing, wasting context window slots that could have held diverse, useful information.
-- **Version accumulation**: Documentation evolves through revisions. Old and new versions coexist in the index. A query about "authentication setup" retrieves chunks from v1.0, v1.2, and v2.0 — mostly redundant, occasionally contradictory.
-- **Template-generated content**: Automated systems produce content from templates (release notes, incident reports, onboarding guides). Hundreds of near-identical documents differ only in entity names or dates, inflating the index without adding unique knowledge.
-- **Summarization echoes**: Content pipelines that generate summaries create derivative documents that overlap heavily with their sources. Both the source and summary get indexed.
-
-The downstream impact is measurable: studies show that 20-40% redundancy in RAG indices leads to 15-25% retrieval recall degradation because redundant chunks displace diverse, relevant results.
+When a user asks how to reset their password, four of your five retrieval slots go to the same answer. The fifth, which held the SSO caveat that actually applied to this user, never makes it in. Redundant chunks don't just waste tokens. They push out the different information the model needed.
 
 ## How It Works
 
 <pre class="mermaid">
 flowchart TD
-    A["Raw documents/chunks"] --> B["Generate embeddings"]
-    B --> C["Build similarity graph (ANN)"]
-    C --> D["Cluster chunks above similarity threshold"]
-    D --> E["Select canonical chunk per cluster"]
-    E --> F{"Canonical selection strategy"}
-    F -->|"Most recent"| G["Pick freshest document"]
-    F -->|"Most complete"| H["Pick longest/most detailed"]
-    F -->|"Highest authority"| I["Pick from preferred source"]
-    G --> J["Index only canonical chunks"]
-    H --> J
-    I --> J
-    J --> K["Store dedup mapping for provenance"]
+    A["Chunks from all sources"] --> E["Embed<br/>(same model as retrieval)"]
+    E --> N["Neighbours above threshold"]
+    N --> G{"Same numbers / key facts?"}
+    G -->|"no"| K["Keep separate"]
+    G -->|"yes"| U["Same cluster"]
+    U --> C["Pick canonical:<br/>source authority → newest → most complete"]
+    C --> I["Index canonical chunks"]
+    C --> M["Store merge map<br/>(dropped id → canonical id)"]
 </pre>
 
-1. **Embedding computation**: Generate embeddings for all documents or chunks using the same embedding model as the retrieval index.
-2. **Similarity graph**: Build a pairwise similarity graph using approximate nearest neighbor (ANN) search. Connect any two chunks whose cosine similarity exceeds the deduplication threshold (typically 0.92-0.97).
-3. **Cluster formation**: Identify connected components or apply clustering (agglomerative, DBSCAN) on the similarity graph. Each cluster represents a set of semantically equivalent chunks.
-4. **Canonical selection**: From each cluster, select one canonical chunk using a configurable strategy — most recent, most complete (longest or most detailed), from the most authoritative source, or a combination.
-5. **Index canonical only**: Index the canonical chunks. Store the deduplication mapping (which chunks were merged, which was selected as canonical) for provenance and debugging.
-6. **Incremental dedup**: When new documents arrive, embed them and check against existing clusters before indexing. Add to an existing cluster or create a new one.
+1. **Embed with the retrieval model.** Duplicates in a different embedding space aren't the duplicates your retriever sees.
+2. **Find neighbours** above a high similarity threshold. Use ANN search at scale. The example compares all pairs for clarity.
+3. **Guard the merge.** Never merge chunks whose numbers differ. "Shipping takes 5 days" and "shipping takes 10 days" embed almost the same and mean different things. Extend the guard to named entities, jurisdictions and versions where they matter in your domain.
+4. **Choose a canonical chunk** per cluster by a rule you can explain: the most authoritative source first, then the newest, then the most complete.
+5. **Keep the merge map.** When someone asks "why isn't the FAQ answer showing up?", you can say which chunk replaced it.
 
 ## When to Use It
 
-- Your corpus is assembled from multiple sources that cover overlapping topics (documentation sites, support databases, wikis, knowledge bases).
-- You have observed retrieval results returning redundant chunks that say the same thing in different words.
-- Your context window is constrained and every slot matters — wasting 3 of 5 slots on redundant content noticeably degrades answer quality.
-- The corpus grows over time with version accumulation or template-generated content.
+- The corpus combines several sources that cover the same topics.
+- You've seen retrieval results where most of the top-k say the same thing.
+- Context slots are scarce, and the diversity of retrieved chunks matters.
 
-## When not to Use It
+## When NOT to Use It
 
-- Your corpus is curated and each document is unique by construction (a single-source, well-maintained documentation site). Deduplication adds processing cost without removing meaningful duplicates.
-- Subtle differences between similar documents are important. Legal documents, contract variations, or regulatory texts may look semantically identical but differ in critical details (dates, amounts, clauses). Deduplication could discard legally distinct documents.
-- Your retrieval pipeline already handles redundancy at query time (e.g., MMR — Maximal Marginal Relevance — diversifies results). If retrieval-time dedup is sufficient, index-time dedup is redundant effort.
-- The corpus is small enough that redundancy is not a practical problem (fewer than 1,000 chunks).
+- **One well-maintained source** where every document is unique by construction.
+- **Near-identical documents that differ in ways that matter legally:** contract variants, regional policies, versioned specs. The number guard helps, but think hard before deduplicating these at all.
+- **Query-time diversity is enough.** Maximal Marginal Relevance (MMR) at retrieval time also reduces redundancy, with no index changes. Try it first if your corpus is small.
 
 ## Trade-offs
 
-1. **Threshold sensitivity** — Too aggressive (low threshold): merge chunks that are related but not equivalent, losing distinct information. Too conservative (high threshold): miss genuine duplicates. Requires per-corpus calibration.
-2. **Canonical selection risk** — The canonical chunk may not always be the best version for every query. A summary might be canonical, but a specific query needs the detailed original. Store the dedup mapping to allow fallback retrieval from non-canonical chunks when needed.
-3. **Processing cost** — Computing pairwise similarity across a large corpus is expensive. ANN indices reduce this from O(n^2) to approximately O(n log n), but for millions of chunks, the indexing pipeline adds meaningful compute time.
-4. **Incremental consistency** — As new documents arrive, they must be checked against all existing clusters. Over time, cluster boundaries can drift. Periodic full re-deduplication may be necessary.
+- **The threshold cuts both ways.** Set it too low and you merge things that are related but different. Set it too high and you miss obvious rewrites. Label a few hundred pairs from your own corpus and pick the threshold from those.
+- **The canonical chunk isn't always the best one for every query.** The short FAQ version wins the cluster, and a detailed question needed the long version. The merge map lets you fall back to it.
+- **Incremental runs drift.** New chunks join old clusters one at a time, and clusters slowly take in looser and looser matches. Re-run deduplication from scratch on a schedule.
 
 ## Failure Modes
 
-### False Merge of Legally Distinct Documents
-**Trigger**: Two documents are semantically similar but differ in critical details (dates, amounts, version numbers, jurisdiction-specific terms).
-**Symptom**: The canonical chunk omits the critical distinction. Retrieval serves the canonical version, and the LLM produces answers that are wrong for the user's specific context.
-**Mitigation**: Before merging, compare named entities and numerical values between candidate duplicates. If structured data differs, keep both chunks as separate entries even if embedding similarity is high.
+**Merging documents that differ in one critical detail.** Two regional policies differ by one number or one country name. Without a guard, one of them disappears, and users in the other region get the wrong answer. Number and entity guards are cheap, so always use them.
 
-### Cluster Drift Over Time
-**Trigger**: Incremental deduplication adds new chunks to existing clusters, and the cluster centroid gradually shifts away from the original canonical meaning.
-**Symptom**: Clusters start absorbing tangentially related content. The canonical chunk no longer represents the cluster well. Retrieval quality degrades as clusters become incoherent.
-**Mitigation**: Periodically re-compute cluster centroids and validate that the canonical chunk is still the closest member to the centroid. Schedule full re-deduplication quarterly or when cluster quality metrics drop.
+**Changing the embedding model invalidates the clusters.** After an embedding upgrade, yesterday's clusters no longer match what the retriever sees. Re-run deduplication as part of the re-indexing job.
 
-### Embedding Model Mismatch
-**Trigger**: The embedding model used for deduplication differs from the one used for retrieval, or the dedup model is updated without re-running deduplication.
-**Symptom**: Chunks that are duplicates under one model's embedding space are not duplicates under the other's. Either the index contains duplicates (dedup missed them) or distinct chunks were incorrectly merged.
-**Mitigation**: Use the same embedding model for deduplication and retrieval. When the embedding model is updated, re-run deduplication before rebuilding the retrieval index.
+**The canonical chunk is stale.** The rule picked the most authoritative source, which hasn't been updated in two years. Combine authority with freshness, using the dates from a [Retrieval Freshness Watermark](../retrieval-and-memory/retrieval-freshness-watermark.md).
 
 ## Implementation Example
 
-```python
-from dataclasses import dataclass, field
+Threshold clustering with union-find, a number guard against false merges, explainable canonical selection, and a merge map. The tests include the case that has to fail: two shipping policies that differ only in their numbers.
 
-import numpy as np
-
-
-@dataclass
-class Chunk:
-    chunk_id: str
-    content: str
-    source: str
-    created_at: float
-    embedding: np.ndarray | None = None
-
-
-@dataclass
-class DedupCluster:
-    canonical_id: str
-    member_ids: list[str]
-    similarity_scores: list[float]
-
-
-class SemanticDeduplicator:
-    def __init__(
-        self,
-        similarity_threshold: float = 0.95,
-        canonical_strategy: str = "most_recent",
-    ):
-        self._threshold = similarity_threshold
-        self._strategy = canonical_strategy
-        self._chunks: dict[str, Chunk] = {}
-        self._clusters: list[DedupCluster] = []
-
-    @staticmethod
-    def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-        dot = np.dot(a, b)
-        norm = np.linalg.norm(a) * np.linalg.norm(b)
-        if norm == 0:
-            return 0.0
-        return float(dot / norm)
-
-    def _find_similar(self, embedding: np.ndarray) -> list[tuple[str, float]]:
-        matches = []
-        for cid, chunk in self._chunks.items():
-            if chunk.embedding is not None:
-                sim = self._cosine_similarity(embedding, chunk.embedding)
-                if sim >= self._threshold:
-                    matches.append((cid, sim))
-        return matches
-
-    def _select_canonical(self, chunk_ids: list[str]) -> str:
-        chunks = [self._chunks[cid] for cid in chunk_ids if cid in self._chunks]
-        if not chunks:
-            return chunk_ids[0]
-
-        if self._strategy == "most_recent":
-            return max(chunks, key=lambda c: c.created_at).chunk_id
-        elif self._strategy == "most_complete":
-            return max(chunks, key=lambda c: len(c.content)).chunk_id
-        else:
-            return chunks[0].chunk_id
-
-    def add_chunk(self, chunk: Chunk) -> tuple[bool, str]:
-        self._chunks[chunk.chunk_id] = chunk
-
-        if chunk.embedding is None:
-            return True, chunk.chunk_id
-
-        similar = self._find_similar(chunk.embedding)
-
-        if not similar:
-            self._clusters.append(
-                DedupCluster(
-                    canonical_id=chunk.chunk_id,
-                    member_ids=[chunk.chunk_id],
-                    similarity_scores=[1.0],
-                )
-            )
-            return True, chunk.chunk_id
-
-        for cluster in self._clusters:
-            cluster_member_sims = [
-                (mid, sim) for mid, sim in similar if mid in cluster.member_ids
-            ]
-            if cluster_member_sims:
-                cluster.member_ids.append(chunk.chunk_id)
-                cluster.similarity_scores.append(
-                    max(sim for _, sim in cluster_member_sims)
-                )
-                cluster.canonical_id = self._select_canonical(cluster.member_ids)
-                return False, cluster.canonical_id
-
-        self._clusters.append(
-            DedupCluster(
-                canonical_id=chunk.chunk_id,
-                member_ids=[chunk.chunk_id],
-                similarity_scores=[1.0],
-            )
-        )
-        return True, chunk.chunk_id
-
-    def get_canonical_chunks(self) -> list[Chunk]:
-        canonical_ids = {c.canonical_id for c in self._clusters}
-        return [self._chunks[cid] for cid in canonical_ids if cid in self._chunks]
-
-    def get_dedup_report(self) -> dict:
-        total_chunks = sum(len(c.member_ids) for c in self._clusters)
-        canonical_count = len(self._clusters)
-        duplicates_removed = total_chunks - canonical_count
-        return {
-            "total_chunks_processed": total_chunks,
-            "canonical_chunks": canonical_count,
-            "duplicates_removed": duplicates_removed,
-            "dedup_ratio": duplicates_removed / max(total_chunks, 1),
-            "clusters": len(self._clusters),
-        }
+```bash
+cd examples && pytest data_patterns/test_semantic_deduplication.py
 ```
+
+<!-- example: examples/data_patterns/semantic_deduplication.py -->
+```python
+"""Semantic Deduplication.
+
+Before indexing, group chunks that say the same thing and keep one canonical
+chunk per group. Two guards stop it from merging things that only *look*
+alike: chunks whose numbers differ are never merged, and the merge map is kept
+so you can always find what was dropped and why.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import date
+
+NUMBERS = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+@dataclass
+class Doc:
+    id: str
+    text: str
+    source: str
+    updated: date
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot / ((sum(x * x for x in a) ** 0.5 or 1.0) * (sum(y * y for y in b) ** 0.5 or 1.0))
+
+
+def _same_facts(a: str, b: str) -> bool:
+    # "Pro costs $49" and "Pro costs $59" embed almost identically. Never merge those.
+    return set(NUMBERS.findall(a)) == set(NUMBERS.findall(b))
+
+
+class _UnionFind:
+    def __init__(self, n: int):
+        self.parent = list(range(n))
+
+    def find(self, x: int) -> int:
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        self.parent[self.find(a)] = self.find(b)
+
+
+def deduplicate(
+    docs: list[Doc],
+    embed: Callable[[str], list[float]],
+    threshold: float = 0.95,
+    source_rank: dict[str, int] | None = None,  # lower = more authoritative
+) -> tuple[list[Doc], dict[str, str]]:
+    """Returns (canonical docs, merged_id -> canonical_id)."""
+    vectors = [embed(d.text) for d in docs]
+    uf = _UnionFind(len(docs))
+    # O(n²) for clarity. At scale, only compare each doc to its ANN neighbours.
+    for i in range(len(docs)):
+        for j in range(i + 1, len(docs)):
+            if _cosine(vectors[i], vectors[j]) >= threshold and _same_facts(docs[i].text, docs[j].text):
+                uf.union(i, j)
+
+    clusters: dict[int, list[Doc]] = {}
+    for i, doc in enumerate(docs):
+        clusters.setdefault(uf.find(i), []).append(doc)
+
+    ranks = source_rank or {}
+
+    def preference(d: Doc):
+        return (ranks.get(d.source, 99), -d.updated.toordinal(), -len(d.text))
+
+    canonical, merged = [], {}
+    for members in clusters.values():
+        keep = min(members, key=preference)
+        canonical.append(keep)
+        for d in members:
+            if d is not keep:
+                merged[d.id] = keep.id
+    return canonical, merged
+```
+<!-- /example -->
 
 ## Tool Landscape
 
-| Tool | Type | Notes |
-|---|---|---|
-| MinHash + LSH (datasketch) | Open-source library | Fast approximate dedup using locality-sensitive hashing; catches near-duplicates, not semantic |
-| Qdrant + clustering | Vector database | Use Qdrant's search to find similar chunks, then cluster externally |
-| Pinecone + dedup pipeline | Managed vector DB | Query-before-insert pattern with similarity threshold |
-| Cleanlab | Open-source library | Identifies near-duplicate and outlier data points using embeddings |
-| Custom pipeline | DIY | Most control over canonical selection strategy and cluster management |
+| Tool | Notes |
+|---|---|
+| datasketch (MinHash LSH) | Fast near-duplicate detection; use it first to remove literal copies cheaply |
+| NVIDIA NeMo Curator | Exact, fuzzy and semantic deduplication pipelines for large corpora |
+| Any vector DB | Query-before-insert: look up neighbours of each new chunk before adding it |
+| LangChain / LlamaIndex | MMR retrieval for query-time diversity |
 
 ## Related Patterns
 
-- **[Data Contract Pattern](/AI-Engineering-Patterns/patterns/data-patterns/data-contract/)** — Data contracts can mandate deduplication as a quality requirement before data enters the index.
-- **[Hybrid Search](/AI-Engineering-Patterns/patterns/retrieval-and-memory/hybrid-search/)** — Deduplicated indices improve hybrid search precision by removing redundant BM25 and vector matches.
-- **[Embedding Drift Detector](/AI-Engineering-Patterns/patterns/observability/embedding-drift-detector/)** — Deduplication should be re-run when embedding drift is detected, as similarity thresholds may need recalibration.
-- **[Retrieval Freshness Watermark](/AI-Engineering-Patterns/patterns/retrieval-and-memory/retrieval-freshness-watermark/)** — Freshness metadata informs the canonical selection strategy: prefer the most recent version.
+- [Data Contract](data-contract.md) runs first. Deduplicate clean data, not malformed data.
+- [Hybrid Search](../retrieval-and-memory/hybrid-search.md) returns more distinct results from a deduplicated index.
+- [Embedding Drift Detector](../observability-and-evaluation/embedding-drift-detector.md): when the embedding space shifts, re-run deduplication.
+- [Retrieval Freshness Watermark](../retrieval-and-memory/retrieval-freshness-watermark.md) supplies the dates used to choose the canonical chunk.
 
 ## Further Reading
 
-- [SemDeDup: Data-efficient Learning at Web-Scale through Semantic Deduplication (Abbas et al., 2023)](https://arxiv.org/abs/2303.09540)
-- [D4: Improving LLM Pretraining via Document De-Duplication and Diversification](https://arxiv.org/abs/2308.12284)
-- [Deduplication and the Quality of Training Data for Large Language Models — Google Research](https://blog.research.google/2022/08/deduplication-and-quality-of-training-data.html)
+- [SemDeDup: Data-efficient learning at web-scale through semantic deduplication](https://arxiv.org/abs/2303.09540), Abbas et al., 2023
+- [Deduplicating Training Data Makes Language Models Better](https://arxiv.org/abs/2107.06499), Lee et al., 2021
+- [D4: Improving LLM Pretraining via Document De-Duplication and Diversification](https://arxiv.org/abs/2308.12284), Tirumala et al., 2023

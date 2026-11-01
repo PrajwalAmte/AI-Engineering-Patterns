@@ -2,202 +2,198 @@
 title: Multi-Agent Orchestration
 pillar: inference-and-serving
 status: validated-in-production
-tags: [multi-agent, orchestration, coordination, delegation, agents]
+tags: [multi-agent, orchestration, delegation, agents]
 related:
-  - Model Router
-  - Circuit Breaker for LLMs
+  - Effort Scaling
+  - Context Compaction
+  - Loop Termination
   - Span-Level Tracing
-contributors: ["@pattern-architect"]
-last_updated: "2026-07"
-description: Coordinate multiple specialized agents through explicit delegation patterns to decompose complex tasks while maintaining control flow and context.
+example: examples/inference_and_serving/multi_agent_orchestration.py
+contributors: ["@PrajwalAmte"]
+last_updated: "2026-11"
+description: One agent plans and delegates narrow, non-overlapping subtasks to workers with fresh contexts, then combines their condensed results.
 sidebar:
   order: 4
 ---
 
 ## What It Is
 
-Multi-Agent Orchestration is a coordination pattern where a primary orchestrator agent decomposes complex tasks and delegates subtasks to specialized worker agents, managing the flow of execution, context, and results between them. The orchestrator maintains the overall plan and decision-making authority while workers execute focused, bounded tasks in parallel or sequence.
+An orchestrator agent breaks a task into subtasks and hands each one to a worker agent. Each worker starts with a clean context containing only its objective, what's out of scope, and how much it may send back. Workers run in parallel where they can. The orchestrator reads their condensed findings and either plans another round or writes the final answer.
+
+This is the "manager-as-tool" shape: workers are function calls, and control always returns to the orchestrator. The other common shape is *handoff*, where control moves to the specialist and stays there. Handoff suits conversational triage (routing a support chat to billing). Manager-as-tool suits research and analysis, where one place has to own the plan.
 
 ## The Problem It Solves
 
-Single-agent systems fail when tasks require both breadth (many parallel subtasks) and depth (specialized expertise per subtask). Without orchestration, you face: 
+A single agent working on a broad task, say "compare these six vendors on security, pricing and integration", fills its context with search results and tool output long before it's finished. Early findings get pushed out or summarized away, and the agent loses track of what it already covered.
 
-- **Context window exhaustion** — A single agent trying to handle all subtasks fills its context with tool outputs and intermediate results, losing critical plan state mid-execution
-- **Expertise dilution** — General-purpose models lack the fine-tuned knowledge or specialized prompting that focused agents provide for domain-specific tasks
-- **Coordination collapse** — Without explicit delegation protocols, ad-hoc multi-agent systems produce duplicate work, miss subtasks entirely, or allow agents to interfere with each other's progress
-- **Cost explosion** — Routing every subtask through a frontier model, even trivial ones, makes complex workflows economically unviable at scale
+Splitting the work gives each subtask its own full context and lets independent subtasks run at the same time. Anthropic's write-up of its Research feature reports that this beat a single agent on breadth-heavy queries. The same write-up is candid that it costs many times the tokens.
 
 ## How It Works
 
-1. **Task decomposition** — The orchestrator analyzes the user's request and develops a plan, breaking it into discrete, bounded subtasks with clear success criteria
-2. **Agent selection** — For each subtask, the orchestrator selects an appropriate specialist agent (or reuses itself) based on required capabilities, cost constraints, and latency budget
-3. **Delegation with context scoping** — The orchestrator delegates each subtask with explicit boundaries: objective, expected output format, tools available, and explicit exclusions to prevent overlap with sibling subtasks
-4. **Parallel or sequential execution** — Worker agents execute in isolated contexts, either in parallel (for independent tasks) or sequentially (for dependent chains)
-5. **Result aggregation** — Workers return condensed findings to the orchestrator, which synthesizes results and decides whether to spawn additional research rounds or terminate
-6. **Iteration or completion** — The orchestrator evaluates completeness, spawns follow-up subtasks if gaps remain, or produces the final output
-
-```mermaid
+<pre class="mermaid">
 flowchart TD
-    U([User Request]) --> O[Orchestrator Agent]
-    O --> PLAN[Decompose Task\n+ Create Plan]
-    PLAN --> SEL{Agent Selection}
-    
-    SEL -- Subtask 1 --> W1[Worker Agent 1]
-    SEL -- Subtask 2 --> W2[Worker Agent 2]
-    SEL -- Subtask N --> WN[Worker Agent N]
-    
-    W1 & W2 & WN --> AGG[Result Aggregation]
-    AGG --> EVAL{Complete?}
-    
-    EVAL -- Gaps Remain --> SEL
-    EVAL -- Sufficient --> SYNTH[Synthesize\nFinal Output]
-    SYNTH --> OUT([Final Response])
-```
+    U["Task"] --> P["Orchestrator: plan<br/>≤ max_agents subtasks,<br/>each with objective + exclusions"]
+    P --> W1["Worker 1<br/>fresh context"]
+    P --> W2["Worker 2<br/>fresh context"]
+    P --> W3["Worker N<br/>fresh context"]
+    W1 & W2 & W3 -->|"condensed findings,<br/>≤ max_words each"| A["Orchestrator: done?"]
+    A -->|"gaps remain and round < max_rounds"| P
+    A -->|"done"| S["Synthesize final answer"]
+</pre>
 
-### Coordination Patterns
-
-Two primary delegation patterns exist:
-
-**Handoff (decentralized control)** — The orchestrator transfers ownership entirely to a specialist. The specialist owns the next response and may further delegate. Control returns only if the specialist explicitly hands back. Best for: open-ended conversation routing, customer service triage, domain-specific consultations.
-
-**Manager-as-Tool (centralized control)** — The orchestrator calls specialists as function tools. Specialists execute and return results, but the orchestrator retains context and control. Best for: document pipelines, data enrichment, structured analysis where a single thread of control must be maintained.
+1. **Plan.** The orchestrator writes subtasks as structured output. Each has an objective and an explicit "not your job" line. That line does more to prevent duplicated work than anything else.
+2. **Delegate.** Each worker gets only its subtask. Workers are often a cheaper model than the orchestrator.
+3. **Condense.** Workers return findings, not raw tool output, and the orchestrator truncates anything over budget. Its context is the scarce resource.
+4. **Re-plan or stop.** The orchestrator sees the findings and decides whether gaps remain. Subtasks that were already done aren't spawned again. Hard caps on agents per round and on rounds stop runaway fan-out.
+5. **Synthesize** from the findings, not from the workers' full transcripts.
 
 ## When to Use It
 
-- Queries require both parallel breadth (researching 10 sources simultaneously) and depth (specialized analysis per source)
-- Task complexity exceeds a single agent's context window capacity even with compression
-- Subtasks demand specialized expertise, fine-tuned models, or domain-specific tools that a generalist cannot efficiently provide
-- Cost optimization requires routing trivial subtasks to small models while reserving frontier models for synthesis
-- Latency requirements permit parallel execution of independent subtasks
-- The task has clear decomposition boundaries and success criteria for subtasks
+- The task is wide: many sources, entities or angles that can be explored independently.
+- One agent's context fills up before the work is done, even with compaction.
+- The answer is valuable enough to justify many times the token cost of a single agent.
 
 ## When NOT to Use It
 
-- **Single-pass queries suffice** — Simple factual lookups, straightforward document summarization, or queries answerable with one retrieval pass do not justify orchestration overhead
-- **Latency is paramount** — Multi-agent systems add coordination overhead; a single fast model may beat multiple slower delegations
-- **Subtasks are tightly coupled** — If every subtask depends on all prior results, parallelism provides no benefit and orchestration just adds cost
-- **You lack clear decomposition rules** — If you cannot articulate explicit subtask boundaries, the orchestrator will produce vague delegations that cause coordination collapse
-- **Token economics don't justify it** — Multi-agent systems can use 10-15× more tokens than single-agent flows; ensure task value justifies the cost
+- **The task is a chain.** If every step depends on the one before, there's nothing to parallelize, and you get the cost without the speed.
+- **The task is small.** One retrieval and one answer don't need a planner. Spawning agents for "what's our PTO policy" is the most common failure here.
+- **You can't say where one subtask ends and the next begins.** If you can't write the exclusions, workers will overlap and duplicate each other.
+- **Writing code together.** Several agents editing the same codebase in parallel tend to make conflicting decisions. Parallelize reading and research, and keep writing single-threaded.
 
 ## Trade-offs
 
-1. **Token cost multiplier vs. task throughput** — Multi-agent orchestration uses substantially more tokens (often 10-15× a single-agent baseline) because each agent operates in its own context window. You pay for breadth: the ability to process more sources, explore more angles, and handle more complex synthesis. This only makes economic sense when the task value exceeds the multiplied cost — typically when a human would otherwise spend hours on the research themselves.
-
-2. **Coordination overhead vs. parallelism gains** — Adding orchestration layers increases end-to-end latency due to delegation handoffs, result serialization, and synthesis steps. The benefit is that independent subtasks can run in parallel, potentially reducing wall-clock time despite higher per-agent latency. If subtasks are sequential dependencies, orchestration just adds cost with no latency benefit.
-
-3. **Complexity in debugging vs. modularity in design** — Multi-agent systems distribute logic across multiple contexts, making failure attribution harder without comprehensive tracing. The benefit is that each agent can be tested, prompted, and optimized independently. Single-agent systems are easier to debug but become unmaintainable as task complexity grows.
-
-4. **Specialist quality vs. generalist flexibility** — Dedicated specialist agents (fine-tuned models, focused prompts, curated tool sets) outperform generalists on narrow tasks. The trade-off is that specialists cannot gracefully handle out-of-scope inputs. The orchestrator must route accurately, or specialist failures cascade.
+- **Tokens.** Every worker re-reads its own instructions and sources. Budget for an order of magnitude more tokens than a single-agent run, and check that the task is worth it.
+- **Debugging spreads out.** A bad answer could come from the plan, a worker, or the synthesis. Without a trace that links them ([Span-Level Tracing](../observability-and-evaluation/span-level-tracing.md)), you'll be guessing.
+- **Latency.** Parallel workers cut wall-clock time, but planning and synthesis add two serial model calls, so short tasks get slower.
 
 ## Failure Modes
 
-| Trigger | Symptom | Mitigation |
-|---------|---------|-----------|
-| Vague delegation instructions | Workers produce overlapping or off-target results; duplicate effort across agents | Write explicit task boundaries in delegation: "focus on X, explicitly exclude Y"; include expected output format |
-| Orchestrator context overflow | Plan state lost mid-execution; orchestrator forgets early subtask results when synthesizing | Write plan to external memory/state store before spawning workers; workers return condensed findings, not raw outputs |
-| Routing miscalibration | Simple queries spawn 10 agents; complex queries under-resourced | Embed explicit effort-scaling rules in orchestrator prompt (e.g., simple=1 agent, medium=2-4, complex=10+); log routing decisions for post-hoc analysis |
-| Worker result explosion | Worker returns megabytes of raw data; orchestrator context fills with unprocessed tool outputs | Instruct workers to condense findings before returning; set token budget limits on worker outputs |
-| No termination criteria | Orchestration loop continues indefinitely spawning agents and burning tokens | Define explicit stop conditions in orchestrator prompt (max iterations, quality threshold, token budget limit) |
+**Over-spawning.** Early versions of most orchestrators send 20 agents after a simple question. Put effort rules in the planner prompt (one agent for a fact lookup, a few for a comparison, more only for open-ended research) and back them with a hard `max_agents`. [Effort Scaling](../cost-and-efficiency/effort-scaling.md) covers this in detail.
+
+**Overlap and gaps.** Two workers research the same thing under different wording, and nobody covers the third angle. Exclusions help. So does having the planner see previous objectives and never re-issue one.
+
+**Context blow-up at synthesis.** Workers return everything they found and the orchestrator's context fills up at the final step, which is the most expensive place for that to happen. Enforce output budgets in code, not just in the prompt.
+
+**No stopping rule.** The orchestrator keeps finding "one more gap". Cap rounds, and treat a malformed plan as "stop", not "retry".
 
 ## Implementation Example
 
-```python
-from anthropic import Anthropic
-from typing import List, Dict, Any
+An orchestrator with structured plans, parallel workers in fresh contexts, exclusions, per-worker output budgets, de-duplication and hard caps. The tests check the guard rails: caps, no re-spawning, truncation, and stopping on a malformed plan.
 
-class OrchestratorAgent:
-    def __init__(self, client: Anthropic):
-        self.client = client
-        self.memory_store = {}  # Persistent plan storage
-        
-    def decompose_task(self, query: str) -> List[Dict[str, Any]]:
-        """Break query into bounded subtasks with explicit scopes."""
-        response = self.client.messages.create(
-            model="claude-opus-4",
-            max_tokens=2000,
-            system="You are a research orchestrator. Decompose the query into 2-5 focused subtasks. For each: specify objective, expected output, and explicit exclusions to prevent overlap.",
-            messages=[{"role": "user", "content": query}]
-        )
-        # Parse response into structured subtasks (simplified)
-        subtasks = [{"id": i, "objective": obj, "scope": scope} 
-                   for i, (obj, scope) in enumerate(self._parse_subtasks(response.content[0].text))]
-        
-        # Persist plan before spawning agents
-        self.memory_store["plan"] = subtasks
-        return subtasks
-    
-    def delegate_to_workers(self, subtasks: List[Dict]) -> List[str]:
-        """Execute subtasks in parallel via worker agents."""
-        import concurrent.futures
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(self._run_worker, task) for task in subtasks]
-            results = [f.result() for f in concurrent.futures.as_completed(futures)]
-        
-        return results
-    
-    def _run_worker(self, task: Dict) -> str:
-        """Single worker agent execution with condensation."""
-        response = self.client.messages.create(
-            model="claude-sonnet-4",  # Smaller model for workers
-            max_tokens=1500,
-            system=f"You are a specialist research agent. Task: {task['objective']}. Scope: {task['scope']}. Return ONLY condensed key findings, not raw data.",
-            messages=[{"role": "user", "content": task['objective']}]
-        )
-        return response.content[0].text
-    
-    def synthesize(self, results: List[str], original_query: str) -> str:
-        """Orchestrator synthesizes worker results into final answer."""
-        plan = self.memory_store.get("plan", [])
-        synthesis_prompt = f"Original query: {original_query}\n\nWorker findings:\n"
-        for i, result in enumerate(results):
-            synthesis_prompt += f"\nSubtask {i+1}: {result}\n"
-        
-        response = self.client.messages.create(
-            model="claude-opus-4",
-            max_tokens=3000,
-            system="Synthesize worker findings into a comprehensive answer. Cite which subtask supports each claim.",
-            messages=[{"role": "user", "content": synthesis_prompt}]
-        )
-        return response.content[0].text
-    
-    def _parse_subtasks(self, text: str) -> List[tuple]:
-        # Simplified parser; production would use structured output
-        return [("Research X", "Focus on recent papers"), ("Research Y", "Focus on industry applications")]
-
-# Usage
-client = Anthropic(api_key="your-api-key")
-orchestrator = OrchestratorAgent(client)
-
-query = "Compare the architectural approaches of GPT-4 and Claude 3 for long-context handling"
-subtasks = orchestrator.decompose_task(query)
-worker_results = orchestrator.delegate_to_workers(subtasks)
-final_answer = orchestrator.synthesize(worker_results, query)
-
-print(final_answer)
+```bash
+cd examples && pytest inference_and_serving/test_multi_agent_orchestration.py
 ```
+
+<!-- example: examples/inference_and_serving/multi_agent_orchestration.py -->
+```python
+"""Multi-Agent Orchestration (orchestrator-worker, manager-as-tool).
+
+The orchestrator plans, fans subtasks out to workers that each get a fresh,
+narrow context, and synthesises their condensed results. The two things that
+keep this from going wrong are explicit subtask boundaries and hard limits on
+agents, rounds and how much each worker may send back.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+
+LLM = Callable[[str], str]
+
+PLAN_PROMPT = """You are coordinating research on: {task}
+Findings so far:
+{findings}
+
+Reply with JSON: {{"done": bool, "subtasks": [{{"objective": str, "exclude": str}}]}}.
+Use at most {max_agents} subtasks. Each objective must not overlap the others.
+Set done=true when the findings answer the task."""
+
+WORKER_PROMPT = """Objective: {objective}
+Out of scope (another agent covers it): {exclude}
+Return only your key findings, at most {max_words} words."""
+
+
+@dataclass
+class Subtask:
+    objective: str
+    exclude: str = ""
+
+
+@dataclass
+class Orchestrator:
+    planner: LLM  # the strong model: plans and synthesises
+    worker: LLM  # often a cheaper model; runs with a fresh context per subtask
+    max_agents: int = 4
+    max_rounds: int = 3
+    max_words_per_worker: int = 150
+    trace: list[dict] = field(default_factory=list)
+
+    def run(self, task: str) -> str:
+        findings: dict[str, str] = {}
+        for round_no in range(1, self.max_rounds + 1):
+            plan = self._plan(task, findings)
+            new = [s for s in plan["subtasks"] if s.objective not in findings][: self.max_agents]
+            self.trace.append({"round": round_no, "done": plan["done"], "spawned": [s.objective for s in new]})
+            if plan["done"] or not new:
+                break
+            with ThreadPoolExecutor(max_workers=len(new)) as pool:
+                results = pool.map(self._delegate, new)
+            for subtask, result in zip(new, results):
+                findings[subtask.objective] = result
+
+        notes = "\n".join(f"- {k}: {v}" for k, v in findings.items())
+        return self.planner(f"Write the final answer to: {task}\nUsing these findings:\n{notes}")
+
+    def _plan(self, task: str, findings: dict[str, str]) -> dict:
+        raw = self.planner(
+            PLAN_PROMPT.format(
+                task=task,
+                findings="\n".join(f"- {k}: {v}" for k, v in findings.items()) or "(none yet)",
+                max_agents=self.max_agents,
+            )
+        )
+        try:
+            data = json.loads(raw)
+            subtasks = [Subtask(s["objective"], s.get("exclude", "")) for s in data.get("subtasks", [])]
+            return {"done": bool(data.get("done")), "subtasks": subtasks}
+        except (json.JSONDecodeError, KeyError, TypeError):
+            # A malformed plan ends the loop rather than spawning garbage work.
+            return {"done": True, "subtasks": []}
+
+    def _delegate(self, subtask: Subtask) -> str:
+        reply = self.worker(
+            WORKER_PROMPT.format(
+                objective=subtask.objective, exclude=subtask.exclude or "nothing", max_words=self.max_words_per_worker
+            )
+        )
+        # Enforce the budget even if the worker ignores the instruction:
+        # the orchestrator's context is the scarce resource.
+        return " ".join(reply.split()[: self.max_words_per_worker])
+```
+<!-- /example -->
 
 ## Tool Landscape
 
-**Multi-agent frameworks with built-in orchestration:**
-- OpenAI Agents SDK — handoff and manager-as-tool primitives, session management
-- LangGraph — graph-based orchestration with typed edges and state management
-- AutoGen (Microsoft) — conversational agent coordination with group chat patterns
-- CrewAI — role-based agent teams with task assignment and delegation
+| Tool | Notes |
+|---|---|
+| Claude Agent SDK | Subagents with isolated contexts, driven by a lead agent |
+| OpenAI Agents SDK | Both handoffs and agents-as-tools |
+| LangGraph | Explicit graph and state; supervisor and swarm templates |
+| AutoGen, CrewAI | Conversation-based and role-based multi-agent frameworks |
 
-**Orchestration layers for existing agent frameworks:**
-- Anthropic Model Context Protocol (MCP) — tool and context sharing across agents
-- Semantic Kernel (Microsoft) — planner + plugin orchestration
-- LlamaIndex Workflows — DAG-based agent composition
+## Related Patterns
 
-**Observability and tracing for multi-agent systems:**
-- LangSmith — trace multi-agent runs with per-agent span visibility
-- Weights & Biases Weave — track agent interactions and token usage per subtask
-- Arize Phoenix — multi-agent trace visualization and debugging
+- [Effort Scaling](../cost-and-efficiency/effort-scaling.md) decides how many agents a task deserves.
+- [Context Compaction](../cost-and-efficiency/context-compaction.md) keeps the orchestrator's own context under control across rounds.
+- [Loop Termination](../loop-engineering/loop-termination.md): the round loop is still a loop and needs a stop condition.
+- [Span-Level Tracing](../observability-and-evaluation/span-level-tracing.md) shows which worker produced the bad finding.
 
 ## Further Reading
 
-1. [How we built our multi-agent research system — Anthropic Engineering Blog, June 2025](https://www.anthropic.com/engineering/multi-agent-research-system)
-2. [OpenAI Agents SDK Documentation — Handoffs and Coordination Patterns, 2025](https://platform.openai.com/docs/agents)
-3. [AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation — Microsoft Research, 2023](https://arxiv.org/abs/2308.08155)
-4. [LangGraph Documentation — Multi-Agent Workflows, 2024](https://langchain-ai.github.io/langgraph/)
+- [How we built our multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system), Anthropic, 2025
+- [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents), Anthropic, 2024. Covers when *not* to use agents at all.
+- [Don't Build Multi-Agents](https://cognition.ai/blog/dont-build-multi-agents), Cognition, 2025. The strongest counter-argument, and worth reading before you build.
+- [AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation](https://arxiv.org/abs/2308.08155), Wu et al., 2023

@@ -3,7 +3,8 @@ name: Validate Patterns
 on:
   pull_request:
     paths:
-      - "content/patterns/**/*.md"
+      - "content/**"
+      - "examples/**"
       - "web/velite.config.ts"
 
 jobs:

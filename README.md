@@ -1,112 +1,82 @@
 # AI Engineering Patterns
 
-A structured pattern library for engineers building AI systems in production. Named patterns with trade-offs, when-to-use guides, and code examples for every layer of a production AI system.
+**37 production patterns for LLM systems. Every one ships with code you can run and tests that pass.**
 
-**The same way the Gang of Four gave software engineers a shared vocabulary for code design, AI Engineering Patterns gives AI engineers a shared vocabulary for shipping reliable, cost-effective, and trustworthy AI systems.**
+Most writing about LLM architecture stops at the diagram. This library doesn't. Each pattern (circuit breakers, semantic caching, guardrails, LLM-as-judge, agent loop termination and 32 more) comes with a small, dependency-free Python reference implementation and a test suite that runs offline in CI. The code on the website is copied from those files automatically, so what you read is what was tested.
 
-[Browse the patterns &rarr;](https://prajwalamte.github.io/AI-Engineering-Patterns)
+[**Browse the patterns →**](https://prajwalamte.github.io/AI-Engineering-Patterns/) · [Decision guide](https://prajwalamte.github.io/AI-Engineering-Patterns/guides/decision-guide/) · [Pattern graph](https://prajwalamte.github.io/AI-Engineering-Patterns/graph/)
 
-## What This Is
+```bash
+git clone https://github.com/PrajwalAmte/AI-Engineering-Patterns
+cd AI-Engineering-Patterns/examples && pip install pytest && pytest
+# 200 passed: no API keys, no network, no dependencies
+```
 
-- A curated set of named patterns organized into 10 pillars.
-- Every pattern includes: how it works, when to use it, when NOT to use it, trade-offs, and implementation examples.
-- Opinionated and practical. Written for practitioners, not researchers.
-- Framework-agnostic, model-agnostic, vendor-neutral.
+## Why another patterns list?
 
-## What This Is Not
+Because the others ask you to trust them. A runnable example with tests is a claim you can check:
 
-- Not an awesome list of links.
-- Not vendor documentation.
-- Not a research paper collection.
-- Not AI-generated content without human review.
+- **It works the way the page says.** The circuit breaker test steps through a cooldown. The semantic cache test checks that a different tenant's question isn't served from cache. The guardrail test hangs a moderation call and checks that the request fails closed.
+- **The edge cases are tested.** Each example tests the failure the page warns about. Examples: the grounding verifier catches "$59" when the source says "$49", the tool-output firewall can't be escaped with a forged closing tag, and entity resolution won't chain two different companies through a vague record.
+- **You can lift it.** Every example takes plain callables (`llm(prompt) -> str`, `embed(text) -> list[float]`), so you can plug in your own client and keep the tests.
 
-## The 10 Pillars
+Each pattern page also says **when not to use it** and **how it fails even when built correctly**. That's usually the most useful part.
 
-| # | Pillar | Covers |
-|---|---|---|
-| 1 | **Inference & Serving** | Gateways, model routing, caching, fallback, batch inference |
-| 2 | **Data Patterns for AI** | Data contracts, feature stores, training pipelines, eval datasets |
-| 3 | **Reliability & Resilience** | Circuit breakers, graceful degradation, canary deployments, rollback |
-| 4 | **Retrieval & Memory** | RAG variants, hybrid search, reranking, contextual memory |
-| 5 | **Observability & Monitoring** | Tracing, cost attribution, quality drift, SLOs for AI |
-| 6 | **Security & Trust** | Input sanitization, output validation, PII handling, audit trails |
-| 7 | **Cost & Efficiency** | Token budgets, model tiering, prompt compression, cost breakers |
-| 8 | **Governance & Compliance** | Model cards, data lineage, policy-as-code, human-in-the-loop |
-| 9 | **Graph Patterns** | GraphRAG, graph-of-thoughts reasoning, entity resolution |
-| 10 | **Evaluation & Testing** | LLM-as-Judge, eval pipelines, regression testing, benchmarking |
+## The patterns
 
-## Pattern Format
+| Pillar | Patterns |
+|---|---|
+| **Inference & Serving** | LLM Gateway · Model Router · Semantic Caching · Multi-Agent Orchestration |
+| **Retrieval & Memory** | Hybrid Search · Retrieval Freshness Watermark · Retrieval Quality Gate · Sliding Context Window · Grounding Verifier |
+| **Data** | Data Contract · Semantic Deduplication |
+| **Reliability** | Circuit Breaker · Request Hedging · Uncertainty-Triggered Retry |
+| **Observability & Evaluation** | Span-Level Tracing · LLM-as-Judge · Embedding Drift Detector · Prompt Mutation Testing · Shadow Model Evaluation |
+| **Security & Trust** | Input Sanitization · Tool Output Firewall · Guardrails |
+| **Cost & Efficiency** | Token Budget · Cascading Context Assembly · Context Compaction · Effort Scaling |
+| **Governance** | Human-in-the-Loop · Prompt Canary Deployment · Model Card |
+| **Graph** | GraphRAG · Entity Resolution Graph · Graph of Thoughts |
+| **Loop Engineering** | Loop Termination · No-Progress Detection · Maker–Verifier Split · Reflexion Loop · Semantic Rollback |
 
-Every pattern follows the same structure:
+Not sure where to start? The [decision guide](https://prajwalamte.github.io/AI-Engineering-Patterns/guides/decision-guide/) starts from symptoms ("our bill is too high", "RAG answers are wrong", "the agent never stops") and points you to two or three patterns.
 
-1. **What It Is** — Plain language description
-2. **The Problem It Solves** — What breaks without this
-3. **How It Works** — Step-by-step with diagrams
-4. **When to Use It** — Specific conditions
-5. **When NOT to Use It** — Explicit anti-use-cases
-6. **Trade-offs** — Honest costs of the pattern
-7. **Implementation Example** — Minimal working code
-8. **Tool Landscape** — Tools that support the pattern
-9. **Related Patterns** — Adjacent patterns
-10. **Further Reading** — External references
+## What a pattern looks like
 
-## Getting Started
+Every page has the same sections: what it is · the problem · how it works (with a diagram) · when to use it · **when NOT to use it** · trade-offs · **failure modes** · the tested implementation · tools that implement it · related patterns · primary sources.
 
-### Browse the site
+Status labels are honest. *Validated in production* means widely used. *Emerging* means real but still settling. Where a pattern name is ours rather than an industry term, the page says so.
 
-Visit [prajwalamte.github.io/AI-Engineering-Patterns](https://prajwalamte.github.io/AI-Engineering-Patterns) to read patterns with full-text search, navigation, dark mode, and an interactive [pattern graph](https://prajwalamte.github.io/AI-Engineering-Patterns/graph/) showing how patterns relate across pillars.
+## Repository layout
 
-### Run locally
+```
+examples/                   Runnable reference implementations + tests (Python 3.10+, stdlib only)
+  common/fakes.py           Deterministic fake LLM, embeddings and clock used by the tests
+  <pillar>/<pattern>.py     One module per pattern
+  <pillar>/test_<pattern>.py
+content/
+  patterns/<pillar>/*.md    Pattern pages (code blocks synced from examples/)
+  guides/                   Getting started, decision guide, glossary
+  case-studies/             How patterns combine in Claude, OpenAI Agents SDK and Perplexity
+web/                        Next.js static site (Velite content pipeline, Pagefind search)
+scripts/
+  sync-examples.js          Copies example code into pattern pages (--check in CI)
+  validate-schema.js        Frontmatter, related-pattern names and every internal link
+```
+
+CI runs the example tests on Python 3.10 and 3.13, checks that pages are in sync with the examples, validates content and links, and builds the site.
+
+## Run the site locally
 
 ```bash
 cd web
 npm install
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000).
-
-### Validate pattern frontmatter
-
-```bash
-node scripts/validate-schema.js
+npm run dev     # http://localhost:3000
 ```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose and write patterns.
+Corrections, production war stories and new patterns are all welcome. The bar for a new pattern: a page in the standard format **and** a runnable example with tests. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Every pattern must include a "When NOT to Use It" section. This is what makes the knowledge base opinionated.
-
-## Pattern Status
-
-| Status | Meaning |
-|---|---|
-| `proposed` | Identified, not yet validated |
-| `emerging` | Used by early adopters |
-| `validated-in-production` | Widely used, trade-offs well understood |
-
-## Project Structure
-
-```
-ai-engineering-patterns/
-├── web/                       # Next.js 16 site (App Router)
-│   ├── app/                   # Pages and layouts
-│   ├── components/            # PatternHeader, Sidebar, TOC, ArticleBody, etc.
-│   ├── lib/                   # patterns.ts helpers
-│   ├── public/diagrams/       # Excalidraw SVG exports
-│   └── velite.config.ts       # Content pipeline (Zod schema + markdown)
-├── content/
-│   ├── patterns/              # 20 patterns across 10 pillar directories
-│   ├── case-studies/          # Production case studies
-│   └── guides/                # Getting started, decision guide, glossary
-├── schema/                    # JSON Schema for pattern frontmatter (reference)
-├── scripts/                   # validate-schema.js (runs Velite, checks pillar alignment)
-├── .github/                   # Actions (deploy to GitHub Pages, validate on PR)
-├── CONTRIBUTING.md
-├── CODE_OF_CONDUCT.md
-└── LICENSE
-```
+If something here saved you a production incident, a ⭐ helps other engineers find it.
 
 ## License
 
